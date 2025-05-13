@@ -1,0 +1,121 @@
+########### MultiPathVoIPLite README ##############
+Authors:
+Bogdan Chifor (bogdan.chifor@certsign.ro)
+Liliana Grigoriu (liliana.grigoriu@upb.ro)
+Marios O. Choudary (marios.choudary@cs.pub.ro)
+
+Last update: 8 July 2021
+
+
+########### GENERAL INFORMATION ##############
+
+# End-to-end SMKEX over SIP and sending and receiving encripted messages
+
+This program does/aims to do (in its first version) SMKEX
+for two clients that aim encripted communication using the SIP
+protocol and two independent servers that that implement opensips.
+
+To achieve this several building blocks are used.
+
+## End-to-end communication between two clients
+
+End-to-end communication between two clients is achieved using opensips servers
+as follows: the clients log unto opensips servers using TLS (transport layer security) as it is implemented in openssl (for this onenssl-dev needs to be installed on the local systems of the clients and the clients need to use adequate certificates  for logging on to the opensips servers; currently only one opensips server is used as we  are still developing the program).
+
+########### INSTALLATION ##################
+
+1. Install openssl-dev and alsalib-dev follows (in Linux):
+sudo apt-get install libssl-dev libasound2-dev
+
+
+2. Compile and install pjproject-2.1.0 that is included in the source repository (end2end-smkex/pjproject-2.1.0)
+$ ./configure
+$ make dep
+$ make clean
+$ make
+$ sudo make install
+
+The library will typicall be installed in the following folders:
+/usr/local/include/
+/usr/local/lib/
+
+3. Create certs folder and certificates and add them in the folder
+MultiPathVoIPLite/certs/mpvoipapp
+
+Note: you should make the folders "certs/mpvoipapp":
+MultiPathVoIPLite# mkdir -p certs/mpvoipapp
+
+
+Rename the certificate files (keys/certs) such that you have the following files in the certs/mpvoipapp/ folder:
+mpvoipapp.crt.pem
+mpvoipapp.key.pem
+
+Note: this certificate/key management is subject to change in the near future.
+
+3. Install libwebsockets in your system (can be outside the MultipathVoIPLite folder)
+# Clone libwebsocket project
+git clone https://github.com/warmcat/libwebsockets.git
+
+# Perform compilation
+cd libwebsockets
+mkdir build
+cd build
+cmake ..
+make
+
+# Install the libwebsocket library on Linux
+sudo make install
+
+4. Install our MpVoipApp as follows
+MultiPathVoIPLite# mkdir build
+MultiPathVoIPLite# cd build
+MultiPathVoIPLite/build# cmake ../
+MultiPathVoIPLite/build# make -j8
+
+Note: in case of re-installation (e.g. when reinstalling pjlib),
+make sure to empty everything from the folder /build, otherwise you might get strange
+compilation errors due to cached files of cmake.
+
+If all goes well you should get something like this:
+
+MultiPathVoIPLite/build# [100%] Linking CXX executable MpVoIPLite
+MultiPathVoIPLite/build# [100%] Built target MpVoIPLite
+
+5. Run MpVoIPLite (example of test)
+
+MultiPathVoIPLite/build (first terminal)# ./MpVoIPLite matei dan serverip_1 sip_port smkex_port_1 matei2 dan2 serverip_2 smkex_port_2
+MultiPathVoIPLite/build (second terminal)# ./MpVoIPLite dan matei serverip_1 sip_port smkex_port_1 dan2 matei2 serverip_2 smkex_port_2 init
+
+
+
+############ Testing PJSIP Apps from command line ################
+
+Using the command line this can be done as follows:
+
+1. Registering a client from the command line: 
+
+liliana@Lenovo:~/pjproject-2.10/pjsip-apps/bin$ ./pjsua-x86_64-unknown-linux-gnu --id sip:lg@195.95.167.231 --use-tls --tls-cert-file=lg.test0.crt.pem --tls-privkey-file=lg.test0.key.pem --registrar sip:195.95.167.231:8890\;transport=tls --use-srtp=1 --local-port=8850
+
+(a second client can be registered using a different port)
+The parameters are:
+a) name of the client (including server IP address) (an id, like an email address),
+b) the certificate,
+c) the private key,
+d) the protocol,the server and the server port for the registration (sip:195.95.167.231:8890\;transport=tls)
+e) we indicate that we wish to use  srtp for voice encription (use-srtp=1)
+f) the local-port can chosen by the user (we would need 2 different ports in order to have 2 clients at the same time)
+
+After clicking enter the Online status 200/OK should appear
+
+2. After registering with another client (either another client from the command line or the software client) we can send a message from the first client to the other client, for example using in the command line:
+Type "i" (enter) for instant message
+There  should appear the message "send instant message to"
+Type "sip:name_of_destination_client@195.95.167.231:8890;transport=tls" (use the desired name for the destination client)
+Then, whatever appears, type the message and click enter. The other client should acknowledge the receiving of the message, and in the current version of the software client also show the message in its output. https://gitlab.cs.pub.ro/marios.choudary/end2end-smkex/
+
+3. To see the logs on the server type (while being logged onto the server machine):
+"tail -f /var/log/messages"
+
+
+
+

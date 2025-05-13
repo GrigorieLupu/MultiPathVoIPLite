@@ -1,0 +1,39 @@
+So i have this file ierarchy:
+.vscode
+MultiPathVoIPLite:
+	-.vscode
+	-auto_resend
+	-base_service
+	-buddy
+	-call_manager
+	-config/include
+	-data_msg
+	-sip_stack
+	-smkex
+	-tests
+	-user_account
+	-utils
+	-web_sockets
+	
+android-client:
+	-app
+	-gradle/wrapper
+	-more gradle files...
+measurements
+pjproject-2.10
+pki
+	-openssl_client.cnf
+	-openssl_intermediate_server_subca.cnf
+	-openssl_root.cnf
+	-openssl_server.cnf
+	-pki_generate_client_cert.sh
+	-pki_generate_server_cert.sh
+	-pki_init.sh
+smkex-server
+	-configuration/tomcat
+	-smkex-application-clients-demo
+	-smkex-application-server
+	-Dockerfile
+	-build.sh
+
+
