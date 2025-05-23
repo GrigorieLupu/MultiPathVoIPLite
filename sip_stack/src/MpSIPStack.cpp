@@ -530,6 +530,9 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
         return;
     }
 
+	MP_LOG1("Mesaj decriptat:");
+	printf("%s\n", (char*)decMsg);
+
     MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
             decMsg, decMsgLen);
 
@@ -679,6 +682,10 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
 
     /*Receiver uri*/
     pj_str_t toUri = pj_str(const_cast<char*>(uri.c_str()));
+
+	MP_LOG1("Mesaj criptat (hex):");
+	for (uint32_t i = 0; i < encMsgLen; ++i) printf("%02X", encMsg[i]);
+	printf("\n");
 
     /*Send message*/
     pj_status_t status = pjsua_im_send(accID, &toUri, MP_NULL, &msgData,

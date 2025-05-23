@@ -767,13 +767,24 @@ void SmkexSessionInfo::initializeRatchet() {
     unsigned char kdf_input[SMKEX_SESSION_KEY_LEN + 16];
     memcpy(kdf_input, _session_key, _session_key_len);
     
-    // For sending chain
-    memcpy(kdf_input + _session_key_len, "SEND", 4);
-    compute_sha256(_sending_chain_key, kdf_input, _session_key_len + 4);
-    
-    // For receiving chain
-    memcpy(kdf_input + _session_key_len, "RECV", 4);
-    compute_sha256(_receiving_chain_key, kdf_input, _session_key_len + 4);
+    // For sending chain - use role-based initialization
+    if (_iAmSessionInitiator) {
+        // If initiator, use "SEND" for sending chain
+        memcpy(kdf_input + _session_key_len, "SEND", 4);
+        compute_sha256(_sending_chain_key, kdf_input, _session_key_len + 4);
+        
+        // And "RECV" for receiving chain
+        memcpy(kdf_input + _session_key_len, "RECV", 4);
+        compute_sha256(_receiving_chain_key, kdf_input, _session_key_len + 4);
+    } else {
+        // If responder, reverse the roles - "RECV" for sending chain
+        memcpy(kdf_input + _session_key_len, "RECV", 4);
+        compute_sha256(_sending_chain_key, kdf_input, _session_key_len + 4);
+        
+        // And "SEND" for receiving chain
+        memcpy(kdf_input + _session_key_len, "SEND", 4);
+        compute_sha256(_receiving_chain_key, kdf_input, _session_key_len + 4);
+    }
     
     // Initialize counters
     _sending_counter = 0;
@@ -781,9 +792,10 @@ void SmkexSessionInfo::initializeRatchet() {
     _ratchet_initialized = true;
     
     LOGMSG("Symmetric ratchet initialized successfully\n");
-    
+
 #if DEBUG
-    printf("Ratchet initialized with:\n");
+    printf("Ratchet initialized with role: %s\n", 
+           _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
     printf("Sending chain key (first 16 bytes): ");
     for(int i = 0; i < 16; i++)
         printf("%02X", _sending_chain_key[i]);
