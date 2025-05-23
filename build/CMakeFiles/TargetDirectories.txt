@@ -1,4 +1,0 @@
-/home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/build/CMakeFiles/MpVoIPLite.dir
-/home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/build/CMakeFiles/test.dir
-/home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/build/CMakeFiles/edit_cache.dir
-/home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/build/CMakeFiles/rebuild_cache.dir
