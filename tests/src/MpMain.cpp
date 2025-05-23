@@ -65,6 +65,7 @@ void print_usage(const std::string &buddy) {
   std::cout << "a - Answer call with " << buddy << std::endl;
   std::cout << "e - End call with " << buddy << std::endl;
   std::cout << "m - Send message to buddy " << buddy << std::endl;
+  std::cout << "r - Show ratchet state" << std::endl;
   std::cout << "++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
 }
 
@@ -303,6 +304,25 @@ int main(int argc, char *argv[]) {
     MpMsgPayload message(buddyID, payload, 1, 5, 1, MP_TYPE_MESSAGE, false);
     MpService::instance()->getAutoResend()->addMessage(message);
     std::cout << std::endl << "Action: Message sent!" << std::endl;
+    break;
+}
+
+case 'r':
+{
+    /* Show ratchet state */
+    std::cout << std::endl << "Action: Show ratchet state!" << std::endl;
+    SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+    session.printRatchetState();
+    
+    // Also print current session key for comparison
+    unsigned char current_key[SMKEX_SESSION_KEY_LEN];
+    int klen = session.getSessionKey(current_key);
+    if (klen > 0) {
+        std::cout << "Base session key (first 16 bytes): ";
+        for(int i = 0; i < 16 && i < klen; i++)
+            printf("%02X", current_key[i]);
+        std::cout << "..." << std::endl;
+    }
     break;
 }
     }

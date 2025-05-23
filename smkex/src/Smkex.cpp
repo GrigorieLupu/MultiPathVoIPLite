@@ -531,6 +531,10 @@ switch((int)rec.getType()){
       
       // Go in connected state
       session.setState(SmkexState::STATEConnected);
+
+      // Initialize symmetric ratchet
+      session.initializeRatchet();
+      MP_LOG1("Symmetric ratchet initialized for session\n");
       
       // Send last nonce+hash (only for initiator) 
       if (session.isInitiator() && session.isKyberInitialised() && 
@@ -586,6 +590,9 @@ switch((int)rec.getType()){
             MP_LOG1("\nError computing secret key\n");
             return -1;
         }
+
+        session.initializeRatchet();
+        MP_LOG1("Symmetric ratchet re-initialized with Kyber-enhanced key\n");
 
         _key_established = true;
         _lastEstablishedBuddyID = buddy;

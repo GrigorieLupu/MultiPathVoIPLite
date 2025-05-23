@@ -452,4 +452,81 @@ CMakeFiles/MpVoIPLite.dir/sip_stack/src/MpSIPStack.cpp.o: \
  /usr/include/openssl/asn1err.h /usr/include/openssl/objectserr.h \
  /usr/include/openssl/err.h /usr/include/openssl/lhash.h \
  /usr/include/openssl/ec.h /usr/include/openssl/ecerr.h \
- /usr/include/openssl/hmac.h /usr/include/c++/13/iostream
+ /usr/include/openssl/hmac.h /usr/include/c++/13/iostream \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/Smkex.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/IOobKeySetup.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/SmkexRecord.h \
+ /usr/include/c++/13/cstring \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/SmkexSessionInfo.h \
+ /usr/include/openssl/dh.h /usr/include/openssl/dherr.h \
+ /usr/include/openssl/pem.h /usr/include/openssl/x509.h \
+ /usr/include/openssl/buffer.h /usr/include/openssl/buffererr.h \
+ /usr/include/openssl/rsa.h /usr/include/openssl/rsaerr.h \
+ /usr/include/openssl/dsa.h /usr/include/openssl/dsaerr.h \
+ /usr/include/openssl/sha.h /usr/include/openssl/x509err.h \
+ /usr/include/openssl/x509_vfy.h /usr/include/openssl/pkcs7.h \
+ /usr/include/openssl/pkcs7err.h /usr/include/openssl/http.h \
+ /usr/include/openssl/conf.h /usr/include/openssl/conferr.h \
+ /usr/include/openssl/conftypes.h /usr/include/openssl/pemerr.h \
+ /usr/include/openssl/rand.h /usr/include/openssl/randerr.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/crypto.h \
+ /usr/include/x86_64-linux-gnu/sys/socket.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_iovec.h \
+ /usr/include/x86_64-linux-gnu/bits/socket.h \
+ /usr/include/x86_64-linux-gnu/bits/socket_type.h \
+ /usr/include/x86_64-linux-gnu/bits/sockaddr.h \
+ /usr/include/x86_64-linux-gnu/asm/socket.h \
+ /usr/include/asm-generic/socket.h /usr/include/linux/posix_types.h \
+ /usr/include/linux/stddef.h \
+ /usr/include/x86_64-linux-gnu/asm/posix_types.h \
+ /usr/include/x86_64-linux-gnu/asm/posix_types_64.h \
+ /usr/include/asm-generic/posix_types.h \
+ /usr/include/x86_64-linux-gnu/asm/bitsperlong.h \
+ /usr/include/asm-generic/bitsperlong.h \
+ /usr/include/x86_64-linux-gnu/asm/sockios.h \
+ /usr/include/asm-generic/sockios.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_osockaddr.h \
+ /usr/include/arpa/inet.h /usr/include/netinet/in.h \
+ /usr/include/x86_64-linux-gnu/bits/in.h \
+ /usr/include/x86_64-linux-gnu/sys/stat.h \
+ /usr/include/x86_64-linux-gnu/bits/stat.h \
+ /usr/include/x86_64-linux-gnu/bits/struct_stat.h \
+ /usr/include/x86_64-linux-gnu/bits/statx.h /usr/include/linux/stat.h \
+ /usr/include/linux/types.h /usr/include/x86_64-linux-gnu/asm/types.h \
+ /usr/include/asm-generic/types.h /usr/include/asm-generic/int-ll64.h \
+ /usr/include/x86_64-linux-gnu/bits/statx-generic.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_statx_timestamp.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_statx.h \
+ /usr/include/x86_64-linux-gnu/sys/time.h /usr/include/fcntl.h \
+ /usr/include/x86_64-linux-gnu/bits/fcntl.h \
+ /usr/include/x86_64-linux-gnu/bits/fcntl-linux.h \
+ /usr/include/linux/falloc.h /usr/include/unistd.h \
+ /usr/include/x86_64-linux-gnu/bits/posix_opt.h \
+ /usr/include/x86_64-linux-gnu/bits/environments.h \
+ /usr/include/x86_64-linux-gnu/bits/confname.h \
+ /usr/include/x86_64-linux-gnu/bits/getopt_posix.h \
+ /usr/include/x86_64-linux-gnu/bits/getopt_core.h \
+ /usr/include/x86_64-linux-gnu/bits/unistd_ext.h \
+ /usr/include/linux/close_range.h /usr/include/getopt.h \
+ /usr/include/x86_64-linux-gnu/bits/getopt_ext.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/Smkex.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/SmkexState.h \
+ /usr/local/include/oqs/kem.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stdbool.h \
+ /usr/local/include/oqs/oqs.h /usr/local/include/oqs/oqsconfig.h \
+ /usr/local/include/oqs/common.h /usr/local/include/oqs/rand.h \
+ /usr/local/include/oqs/sig.h /usr/local/include/oqs/sig_dilithium.h \
+ /usr/local/include/oqs/sig_ml_dsa.h /usr/local/include/oqs/sig_falcon.h \
+ /usr/local/include/oqs/sig_sphincs.h /usr/local/include/oqs/sig_mayo.h \
+ /usr/local/include/oqs/sig_cross.h /usr/local/include/oqs/sig_uov.h \
+ /usr/local/include/oqs/sig_snova.h /usr/local/include/oqs/sig_stfl.h \
+ /usr/local/include/oqs/aes_ops.h /usr/local/include/oqs/sha2_ops.h \
+ /usr/local/include/oqs/sha3_ops.h /usr/local/include/oqs/sha3x4_ops.h \
+ /usr/local/include/oqs/kem_bike.h \
+ /usr/local/include/oqs/kem_classic_mceliece.h \
+ /usr/local/include/oqs/kem_kyber.h /usr/local/include/oqs/kem_ml_kem.h \
+ /usr/local/include/oqs/kem_ntruprime.h \
+ /usr/local/include/oqs/kem_frodokem.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/ISmkexTransportCallback.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/ISmkexTransport.h \
+ /home/grigorie/Desktop/end2end-smkex-master/MultiPathVoIPLite/smkex/include/SmkexSessionInfo.h

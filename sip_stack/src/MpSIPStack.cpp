@@ -6,6 +6,8 @@
 #include <pjsip/sip_transport.h>
 #include <pjmedia/transport_srtp.h>
 #include <iostream>
+#include "Smkex.h"
+#include "SmkexSessionInfo.h"
 
 #define MP_OOB_CRYPTO_AES_256_GCM "AEAD_AES_256_GCM"
 #define SMKEX_OOB_KEY_PREFIX "smkex://"
@@ -469,36 +471,69 @@ void MpSIPStack::rejectCall(pjsua_call_id call_id) {
 }
 
 void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
-		const pj_str_t *to, const pj_str_t *contact, const pj_str_t *mime_type,
-		const pj_str_t *body) {
-	MP_LOG1("New message received...");
+        const pj_str_t *to, const pj_str_t *contact, const pj_str_t *mime_type,
+        const pj_str_t *body) {
+    MP_LOG1("New message received...");
 
-	std::string fromUri(from->ptr, from->slen);
+    std::string fromUri(from->ptr, from->slen);
+    std::string senderSerial = MpUtils::getSerialFromUri(fromUri.c_str());
 
-	/* Get OOB key */
-	char key[SESSION_KEY_LENGTH] = { 0 };
-	if (!getOobKey(MpUtils::getSerialFromUri(fromUri.c_str()), key, sizeof(key)))
-		return;
-	
-	/* Decrypt the message */
-	size_t decMsgLen;
-	uint8_t *decMsg = new uint8_t[body->slen];
+    // Get the Smkex instance to access session
+    Smkex* smkex = nullptr;
+    oobKeyCb_.usePool();
+    vector<IOobKeySetup*> oobKeyList = oobKeyCb_.getPool();
+    if (!oobKeyList.empty()) {
+        smkex = dynamic_cast<Smkex*>(oobKeyList[0]);
+    }
+    oobKeyCb_.endUsePool();
+    
+    if (!smkex) {
+        MP_LOG1("Error: Cannot get Smkex instance");
+        return;
+    }
 
-	int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
-								body->slen - SESSION_IV_LENGTH,
-								reinterpret_cast<const unsigned char *>(key),
-								reinterpret_cast<const unsigned char*>(body->ptr),
-								decMsg, &decMsgLen);
+    // Get session for the sender
+    SmkexSessionInfo& session = smkex->getSessionInfo(senderSerial);
+    
+    // Get ratcheted key for this message
+    char key[SESSION_KEY_LENGTH] = { 0 };
+    if (session.isRatchetInitialized()) {
+        unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
+        if (!session.ratchetReceivingChain(ratchet_key)) {
+            MP_LOG1("Error: Failed to ratchet receiving chain");
+            return;
+        }
+        memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
+        MP_LOG2_INT("Using ratcheted key for message from counter: ", session.getReceivingCounter() - 1);
+    } else {
+        // Fallback to session key if ratchet not initialized
+        if (!getOobKey(senderSerial, key, sizeof(key))) {
+            MP_LOG1("Error: No key available for decryption");
+            return;
+        }
+        MP_LOG1("Warning: Using session key (ratchet not initialized)");
+    }
+    
+    /* Decrypt the message */
+    size_t decMsgLen;
+    uint8_t *decMsg = new uint8_t[body->slen];
 
-	if (ret != 1) {
-		delete[] decMsg;
-		return;
-	}
+    int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
+                                body->slen - SESSION_IV_LENGTH,
+                                reinterpret_cast<const unsigned char *>(key),
+                                reinterpret_cast<const unsigned char*>(body->ptr),
+                                decMsg, &decMsgLen);
 
-	MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
-			decMsg, decMsgLen);
+    if (ret != 1) {
+        MP_LOG1("Error: Message decryption failed");
+        delete[] decMsg;
+        return;
+    }
 
-	delete[] decMsg;
+    MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
+            decMsg, decMsgLen);
+
+    delete[] decMsg;
 }
 
 void MpSIPStack::on_pager_status(pjsua_call_id call_id, const pj_str_t *to,
@@ -563,64 +598,95 @@ int MpSIPStack::on_srtp_oob_key_from_id(const char *id, int id_len, char *key, i
 }
 
 mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
-		uint32_t msgLen, void* msgId) {
+        uint32_t msgLen, void* msgId) {
 
-	MP_CHECK_INPUT(serial != MP_NULL, MP_INPUT_ERR);
-	MP_CHECK_INPUT(msg != MP_NULL, MP_INPUT_ERR);
-	MP_CHECK_INPUT(msgLen > 0, MP_INPUT_ERR);
+    MP_CHECK_INPUT(serial != MP_NULL, MP_INPUT_ERR);
+    MP_CHECK_INPUT(msg != MP_NULL, MP_INPUT_ERR);
+    MP_CHECK_INPUT(msgLen > 0, MP_INPUT_ERR);
 
-	MP_LOG1("Sending message...");
+    MP_LOG1("Sending message...");
 
-	/*Account ID*/
-	int accID = MpService::instance()->getSIPStack()->getAccountID();
-	
-	//verify account id
-	if (accID < 0)
-		return MP_GENERAL_ERR;
+    /*Account ID*/
+    int accID = MpService::instance()->getSIPStack()->getAccountID();
+    
+    //verify account id
+    if (accID < 0)
+        return MP_GENERAL_ERR;
 
-	uint8_t iv[SESSION_IV_LENGTH] = { 0 };
-	/* Generate IV */
-	if (mp_randomize(iv, sizeof(iv)) != 1)
-		return MP_GENERAL_ERR;
+    uint8_t iv[SESSION_IV_LENGTH] = { 0 };
+    /* Generate IV */
+    if (mp_randomize(iv, sizeof(iv)) != 1)
+        return MP_GENERAL_ERR;
 
-	/* Get key */
-	char key[SESSION_KEY_LENGTH] = { 0 };
-	if (!getOobKey(serial, key, sizeof(key)))
-		return MP_GENERAL_ERR;
+    // Get the Smkex instance to access session
+    Smkex* smkex = nullptr;
+    oobKeyCb_.usePool();
+    vector<IOobKeySetup*> oobKeyList = oobKeyCb_.getPool();
+    if (!oobKeyList.empty()) {
+        smkex = dynamic_cast<Smkex*>(oobKeyList[0]);
+    }
+    oobKeyCb_.endUsePool();
+    
+    if (!smkex) {
+        MP_LOG1("Error: Cannot get Smkex instance");
+        return MP_GENERAL_ERR;
+    }
 
-	/* Encrypt the message */
-	size_t encMsgLen;
-	uint8_t *encMsg = new uint8_t[SESSION_IV_LENGTH + msgLen + SESSION_TAG_LENGTH];
-	memcpy(encMsg, iv, sizeof(iv));
-	int ret = mp_aesgcm_encrypt(msg, msgLen,
-								reinterpret_cast<const unsigned char*>(key),
-								iv, encMsg + sizeof(iv), &encMsgLen);
-	if (ret != 1) {
-		delete[] encMsg;
-		return MP_GENERAL_ERR;
-	}
-	encMsgLen = SESSION_IV_LENGTH + msgLen + SESSION_TAG_LENGTH;
+    // Get session for the receiver
+    SmkexSessionInfo& session = smkex->getSessionInfo(serial);
+    
+    /* Get key */
+    char key[SESSION_KEY_LENGTH] = { 0 };
+    if (session.isRatchetInitialized()) {
+        unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
+        if (!session.ratchetSendingChain(ratchet_key)) {
+            MP_LOG1("Error: Failed to ratchet sending chain");
+            return MP_GENERAL_ERR;
+        }
+        memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
+        MP_LOG2_INT("Using ratcheted key for message with counter: ", session.getSendingCounter() - 1);
+    } else {
+        // Fallback to session key if ratchet not initialized
+        if (!getOobKey(serial, key, sizeof(key))) {
+            MP_LOG1("Error: No key available for encryption");
+            return MP_GENERAL_ERR;
+        }
+        MP_LOG1("Warning: Using session key (ratchet not initialized)");
+    }
 
-	/*Message data*/
-	pj_str_t msgData;
-	msgData.ptr = reinterpret_cast<char*>(encMsg);
-	msgData.slen = encMsgLen;
+    /* Encrypt the message */
+    size_t encMsgLen;
+    uint8_t *encMsg = new uint8_t[SESSION_IV_LENGTH + msgLen + SESSION_TAG_LENGTH];
+    memcpy(encMsg, iv, sizeof(iv));
+    int ret = mp_aesgcm_encrypt(msg, msgLen,
+                                reinterpret_cast<const unsigned char*>(key),
+                                iv, encMsg + sizeof(iv), &encMsgLen);
+    if (ret != 1) {
+        delete[] encMsg;
+        return MP_GENERAL_ERR;
+    }
+    encMsgLen = SESSION_IV_LENGTH + msgLen + SESSION_TAG_LENGTH;
 
-	std::string uri =
-			MpUtils::getUriFromSerial(serial,
-					MpService::instance()->getUserAccount()->accSettings_.getServerAddress().c_str(),
-					MpService::instance()->getUserAccount()->accSettings_.getPort());
+    /*Message data*/
+    pj_str_t msgData;
+    msgData.ptr = reinterpret_cast<char*>(encMsg);
+    msgData.slen = encMsgLen;
 
-	/*Receiver uri*/
-	pj_str_t toUri = pj_str(const_cast<char*>(uri.c_str()));
+    std::string uri =
+            MpUtils::getUriFromSerial(serial,
+                    MpService::instance()->getUserAccount()->accSettings_.getServerAddress().c_str(),
+                    MpService::instance()->getUserAccount()->accSettings_.getPort());
 
-	/*Send message*/
-	pj_status_t status = pjsua_im_send(accID, &toUri, MP_NULL, &msgData,
-	MP_NULL, msgId);
+    /*Receiver uri*/
+    pj_str_t toUri = pj_str(const_cast<char*>(uri.c_str()));
 
-	delete[] encMsg;
+    /*Send message*/
+    pj_status_t status = pjsua_im_send(accID, &toUri, MP_NULL, &msgData,
+    MP_NULL, msgId);
 
-	return status == PJ_SUCCESS ? MP_SUCCESS : MP_GENERAL_ERR;
+    delete[] encMsg;
+
+    return status == PJ_SUCCESS ? MP_SUCCESS : MP_GENERAL_ERR;
 }
 
 bool MpSIPStack::isSipStackStarted() {
