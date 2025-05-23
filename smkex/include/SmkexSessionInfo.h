@@ -213,6 +213,14 @@ public:
   int initKeysfromDH(void);
 
   /**
+     * @brief Resetează contoarele ratchet la valorile inițiale
+     * 
+     * Această metodă re-derivă cheile de lanț din cheia de sesiune
+     * și resetează contoarele pentru a resincroniza comunicarea.
+     */
+    void resetRatchetCounters();
+
+  /**
    * Open file <filename>, read public Diffie-Hellman parameters P and G and store them in <pdhm>
    * in dh (Diffie-Hellman key exchange context)
    * @param filename file from which to read P and G

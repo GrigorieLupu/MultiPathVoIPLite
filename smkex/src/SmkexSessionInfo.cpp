@@ -758,37 +758,83 @@ void SmkexSessionInfo::printSessionInfo() const
 }
 
 void SmkexSessionInfo::initializeRatchet() {
+    printf("=== CALLING INITIALIZE RATCHET ===\n");
+    printf("Role: %s\n", _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
+    printf("Previous ratchet state: initialized=%s, sending=%u, receiving=%u\n",
+           _ratchet_initialized ? "YES" : "NO", _sending_counter, _receiving_counter);
+    
     if (_session_key_len == 0) {
         LOGMSG("Error: Cannot initialize ratchet without session key\n");
         return;
     }
     
-    // Derive initial chain keys from session key
-    unsigned char kdf_input[SMKEX_SESSION_KEY_LEN + 16];
-    memcpy(kdf_input, _session_key, _session_key_len);
+    // DEBUG: Verify buffer sizes
+    printf("SMKEX_SESSION_KEY_LEN = %d\n", SMKEX_SESSION_KEY_LEN);
+    printf("_session_key_len = %u\n", _session_key_len);
+    printf("sizeof(_sending_chain_key) = %zu\n", sizeof(_sending_chain_key));
+    printf("sizeof(_receiving_chain_key) = %zu\n", sizeof(_receiving_chain_key));
+    printf("sizeof(_session_key) = %zu\n", sizeof(_session_key));
     
-    // For sending chain - use role-based initialization
-    if (_iAmSessionInitiator) {
-        // If initiator, use "SEND" for sending chain
-        memcpy(kdf_input + _session_key_len, "SEND", 4);
-        compute_sha256(_sending_chain_key, kdf_input, _session_key_len + 4);
-        
-        // And "RECV" for receiving chain
-        memcpy(kdf_input + _session_key_len, "RECV", 4);
-        compute_sha256(_receiving_chain_key, kdf_input, _session_key_len + 4);
-    } else {
-        // If responder, reverse the roles - "RECV" for sending chain
-        memcpy(kdf_input + _session_key_len, "RECV", 4);
-        compute_sha256(_sending_chain_key, kdf_input, _session_key_len + 4);
-        
-        // And "SEND" for receiving chain
-        memcpy(kdf_input + _session_key_len, "SEND", 4);
-        compute_sha256(_receiving_chain_key, kdf_input, _session_key_len + 4);
-    }
+    // Reset the ratchet completely
+    _ratchet_initialized = false;
     
-    // Initialize counters
+    // FIXED: Clear chain key buffers completely before use
+    memset(_sending_chain_key, 0, sizeof(_sending_chain_key));
+    memset(_receiving_chain_key, 0, sizeof(_receiving_chain_key));
+    
+    // Initialize counters based on role
     _sending_counter = 0;
     _receiving_counter = 0;
+
+    // Derive initial chain keys from session key using KDF
+    printf("Session key (%u bytes): ", _session_key_len);
+    for(int i = 0; i < (int)_session_key_len && i < 32; i++)
+        printf("%02X", _session_key[i]);
+    if (_session_key_len > 32) printf("...");
+    printf("\n");
+    
+    printf("INITRATCHET DEBUG: Role=%s, SessionID=%d, Buddy=%s\n", 
+           _iAmSessionInitiator ? "INITIATOR" : "RESPONDER", 
+           _sessionID, _buddy.c_str());
+    
+    // Use a proper KDF to derive chain keys from session key
+    // For sending chain: HMAC-SHA256(session_key, "SENDING_CHAIN" || role)
+    // For receiving chain: HMAC-SHA256(session_key, "RECEIVING_CHAIN" || role)
+    
+    unsigned int hmac_len;
+    
+    if (_iAmSessionInitiator) {
+        // Initiator: sending = "INIT_SEND", receiving = "RESP_SEND" 
+        const char* send_label = "INIT_SEND";
+        const char* recv_label = "RESP_SEND";
+        
+        HMAC(EVP_sha256(), _session_key, _session_key_len,
+             (unsigned char*)send_label, strlen(send_label), 
+             _sending_chain_key, &hmac_len);
+             
+        HMAC(EVP_sha256(), _session_key, _session_key_len,
+             (unsigned char*)recv_label, strlen(recv_label), 
+             _receiving_chain_key, &hmac_len);
+             
+        printf("INITRATCHET DEBUG: INITIATOR - sending=INIT_SEND, receiving=RESP_SEND\n");
+    } else {
+        // Responder: sending = "RESP_SEND", receiving = "INIT_SEND"
+        const char* send_label = "RESP_SEND";
+        const char* recv_label = "INIT_SEND";
+        
+        HMAC(EVP_sha256(), _session_key, _session_key_len,
+             (unsigned char*)send_label, strlen(send_label), 
+             _sending_chain_key, &hmac_len);
+             
+        HMAC(EVP_sha256(), _session_key, _session_key_len,
+             (unsigned char*)recv_label, strlen(recv_label), 
+             _receiving_chain_key, &hmac_len);
+             
+        printf("INITRATCHET DEBUG: RESPONDER - sending=RESP_SEND, receiving=INIT_SEND\n");
+    }
+    
+    printf("HMAC output length: %u\n", hmac_len);
+    
     _ratchet_initialized = true;
     
     LOGMSG("Symmetric ratchet initialized successfully\n");
@@ -796,14 +842,40 @@ void SmkexSessionInfo::initializeRatchet() {
 #if DEBUG
     printf("Ratchet initialized with role: %s\n", 
            _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
-    printf("Sending chain key (first 16 bytes): ");
-    for(int i = 0; i < 16; i++)
+    printf("Initial sending counter: %u\n", _sending_counter);
+    printf("Initial receiving counter: %u\n", _receiving_counter);
+    
+    // Show first 32 bytes of each chain key (SHA256 output is 32 bytes)
+    printf("Sending chain key (32 bytes): ");
+    for(int i = 0; i < 32; i++)
         printf("%02X", _sending_chain_key[i]);
-    printf("...\n");
-    printf("Receiving chain key (first 16 bytes): ");
-    for(int i = 0; i < 16; i++)
+    printf("\n");
+    
+    printf("Receiving chain key (32 bytes): ");
+    for(int i = 0; i < 32; i++)
         printf("%02X", _receiving_chain_key[i]);
-    printf("...\n");
+    printf("\n");
+    
+    // Check if there's unwanted data beyond 32 bytes
+    bool has_extra_data = false;
+    for(int i = 32; i < SMKEX_SESSION_KEY_LEN; i++) {
+        if (_sending_chain_key[i] != 0 || _receiving_chain_key[i] != 0) {
+            has_extra_data = true;
+            break;
+        }
+    }
+    if (has_extra_data) {
+        printf("WARNING: Extra data found beyond 32 bytes in chain keys!\n");
+        printf("Sending chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
+        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
+            printf("%02X", _sending_chain_key[i]);
+        printf("\n");
+        
+        printf("Receiving chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
+        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
+            printf("%02X", _receiving_chain_key[i]);
+        printf("\n");
+    }
 #endif
 }
 
@@ -812,38 +884,58 @@ bool SmkexSessionInfo::ratchetSendingChain(unsigned char message_key[SMKEX_SESSI
         LOGMSG("Error: Ratchet not initialized\n");
         return false;
     }
+
+    printf("=== RATCHET SENDING DEBUG ===\n");
+    printf("Buddy: %s, Role: %s\n", _buddy.c_str(), _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
+    printf("Using sending counter: %u (will increment to %u after)\n", _sending_counter, _sending_counter + 1);
     
-    // Derive message key using HMAC
+    // Show only first 32 bytes (actual HMAC output)
+    printf("Current sending chain key (32 bytes): ");
+    for(int i = 0; i < 32; i++)
+        printf("%02X", _sending_chain_key[i]);
+    printf("\n");
+    
+    // Counter bytes for HMAC input
     unsigned char counter_bytes[4];
     counter_bytes[0] = (_sending_counter >> 24) & 0xFF;
     counter_bytes[1] = (_sending_counter >> 16) & 0xFF;
     counter_bytes[2] = (_sending_counter >> 8) & 0xFF;
     counter_bytes[3] = _sending_counter & 0xFF;
     
+    printf("Counter bytes: %02X%02X%02X%02X (decimal: %u)\n",
+           counter_bytes[0], counter_bytes[1], counter_bytes[2], counter_bytes[3], _sending_counter);
+    
     // Message key = HMAC(chain_key, counter || "MSG")
-    unsigned char hmac_input[8];
+    unsigned char hmac_input[7];
     memcpy(hmac_input, counter_bytes, 4);
     memcpy(hmac_input + 4, "MSG", 3);
     
+    printf("HMAC input: ");
+    for(int i = 0; i < 7; i++)
+        printf("%02X", hmac_input[i]);
+    printf("\n");
+    
     unsigned int hmac_len;
-    HMAC(EVP_sha256(), _sending_chain_key, SMKEX_SESSION_KEY_LEN, 
+    // FIXED: Use only 32 bytes of chain key for HMAC (SHA256 output size)
+    HMAC(EVP_sha256(), _sending_chain_key, 32, 
          hmac_input, 7, message_key, &hmac_len);
     
     // Update chain key: new_chain_key = HMAC(chain_key, "CHAIN")
-    unsigned char new_chain_key[SMKEX_SESSION_KEY_LEN];
-    HMAC(EVP_sha256(), _sending_chain_key, SMKEX_SESSION_KEY_LEN,
+    unsigned char new_chain_key[32]; // SHA256 output is 32 bytes
+    HMAC(EVP_sha256(), _sending_chain_key, 32,
          (unsigned char*)"CHAIN", 5, new_chain_key, &hmac_len);
-    memcpy(_sending_chain_key, new_chain_key, SMKEX_SESSION_KEY_LEN);
+    
+    // Clear the full buffer and copy new key
+    memset(_sending_chain_key, 0, SMKEX_SESSION_KEY_LEN);
+    memcpy(_sending_chain_key, new_chain_key, 32);
     
     _sending_counter++;
     
-#if DEBUG
-    printf("Ratcheted sending chain to counter %d\n", _sending_counter);
     printf("Message key (first 16 bytes): ");
     for(int i = 0; i < 16; i++)
         printf("%02X", message_key[i]);
     printf("...\n");
-#endif
+    printf("=============================\n");
     
     return true;
 }
@@ -853,37 +945,57 @@ bool SmkexSessionInfo::ratchetReceivingChain(unsigned char message_key[SMKEX_SES
         LOGMSG("Error: Ratchet not initialized\n");
         return false;
     }
+
+    printf("=== RATCHET RECEIVING DEBUG ===\n");
+    printf("Buddy: %s, Role: %s\n", _buddy.c_str(), _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
+    printf("Using receiving counter: %u (will increment to %u after)\n", _receiving_counter, _receiving_counter + 1);
     
-    // Similar to sending chain but with receiving chain key
+    // Show only first 32 bytes (actual HMAC output)
+    printf("Current receiving chain key (32 bytes): ");
+    for(int i = 0; i < 32; i++)
+        printf("%02X", _receiving_chain_key[i]);
+    printf("\n");
+    
+    // Counter bytes for HMAC input
     unsigned char counter_bytes[4];
     counter_bytes[0] = (_receiving_counter >> 24) & 0xFF;
     counter_bytes[1] = (_receiving_counter >> 16) & 0xFF;
     counter_bytes[2] = (_receiving_counter >> 8) & 0xFF;
     counter_bytes[3] = _receiving_counter & 0xFF;
     
-    unsigned char hmac_input[8];
+    printf("Counter bytes: %02X%02X%02X%02X (decimal: %u)\n",
+           counter_bytes[0], counter_bytes[1], counter_bytes[2], counter_bytes[3], _receiving_counter);
+    
+    unsigned char hmac_input[7];
     memcpy(hmac_input, counter_bytes, 4);
     memcpy(hmac_input + 4, "MSG", 3);
     
+    printf("HMAC input: ");
+    for(int i = 0; i < 7; i++)
+        printf("%02X", hmac_input[i]);
+    printf("\n");
+    
     unsigned int hmac_len;
-    HMAC(EVP_sha256(), _receiving_chain_key, SMKEX_SESSION_KEY_LEN,
+    // FIXED: Use only 32 bytes of chain key for HMAC (SHA256 output size)
+    HMAC(EVP_sha256(), _receiving_chain_key, 32,
          hmac_input, 7, message_key, &hmac_len);
     
     // Update chain key
-    unsigned char new_chain_key[SMKEX_SESSION_KEY_LEN];
-    HMAC(EVP_sha256(), _receiving_chain_key, SMKEX_SESSION_KEY_LEN,
+    unsigned char new_chain_key[32]; // SHA256 output is 32 bytes
+    HMAC(EVP_sha256(), _receiving_chain_key, 32,
          (unsigned char*)"CHAIN", 5, new_chain_key, &hmac_len);
-    memcpy(_receiving_chain_key, new_chain_key, SMKEX_SESSION_KEY_LEN);
+    
+    // Clear the full buffer and copy new key
+    memset(_receiving_chain_key, 0, SMKEX_SESSION_KEY_LEN);
+    memcpy(_receiving_chain_key, new_chain_key, 32);
     
     _receiving_counter++;
     
-#if DEBUG
-    printf("Ratcheted receiving chain to counter %d\n", _receiving_counter);
     printf("Message key (first 16 bytes): ");
     for(int i = 0; i < 16; i++)
         printf("%02X", message_key[i]);
     printf("...\n");
-#endif
+    printf("===============================\n");
     
     return true;
 }
@@ -907,3 +1019,5 @@ void SmkexSessionInfo::printRatchetState() const {
     }
     printf("==================\n");
 }
+
+

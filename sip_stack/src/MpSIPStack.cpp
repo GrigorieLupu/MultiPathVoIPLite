@@ -494,13 +494,40 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
 
     // Get session for the sender
     SmkexSessionInfo& session = smkex->getSessionInfo(senderSerial);
+
+    // IMPROVED: Use hash-based duplicate detection instead of exact message comparison
+    static std::map<std::string, std::string> lastProcessedHashes;
+    std::string currentMessage(body->ptr, body->slen);
+    
+    // Calculate message hash for duplicate detection
+    unsigned char msgHash[32];
+    compute_sha256(msgHash, (unsigned char*)currentMessage.c_str(), currentMessage.length());
+    
+    char hashStr[65];
+    for(int i = 0; i < 32; i++) {
+        sprintf(hashStr + i*2, "%02X", msgHash[i]);
+    }
+    std::string currentHash(hashStr);
+    
+    // Check for duplicate based on hash
+    if (lastProcessedHashes[senderSerial] == currentHash) {
+        MP_LOG1("Warning: Duplicate message detected based on hash, skipping processing");
+        return;
+    }
+    
+    // Store hash before processing (to prevent reentry issues)
+    lastProcessedHashes[senderSerial] = currentHash;
     
     // Get ratcheted key for this message
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
+        printf("BEFORE ratcheting - Receiving counter: %u\n", session.getReceivingCounter());
+
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
         if (!session.ratchetReceivingChain(ratchet_key)) {
             MP_LOG1("Error: Failed to ratchet receiving chain");
+            // Restore the hash since processing failed
+            lastProcessedHashes.erase(senderSerial);
             return;
         }
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
@@ -509,6 +536,7 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
         // Fallback to session key if ratchet not initialized
         if (!getOobKey(senderSerial, key, sizeof(key))) {
             MP_LOG1("Error: No key available for decryption");
+            lastProcessedHashes.erase(senderSerial);
             return;
         }
         MP_LOG1("Warning: Using session key (ratchet not initialized)");
@@ -526,12 +554,14 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
 
     if (ret != 1) {
         MP_LOG1("Error: Message decryption failed");
+        // Restore hash since decryption failed - might be out of sync
+        lastProcessedHashes.erase(senderSerial);
         delete[] decMsg;
         return;
     }
 
-	MP_LOG1("Mesaj decriptat:");
-	printf("%s\n", (char*)decMsg);
+    MP_LOG1("Mesaj decriptat:");
+    printf("%s\n", (char*)decMsg);
 
     MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
             decMsg, decMsgLen);
