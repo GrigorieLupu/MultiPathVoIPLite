@@ -72,6 +72,18 @@ private:
   unsigned int _receiving_counter;
   bool _ratchet_initialized;
 
+  //vertical
+      bool _vertical_ratchet_initialized = false;
+    unsigned int _vertical_ratchet_counter = 0;
+    bool _pending_vertical_ratchet = false;
+    
+    // DH keys pentru vertical ratchet
+    DH *_vertical_dh = nullptr;
+    unsigned char _vertical_local_pub_key[SMKEX_PUB_KEY_LEN];
+    unsigned int _vertical_local_pub_key_length = 0;
+    unsigned char _vertical_remote_pub_key[SMKEX_PUB_KEY_LEN];
+    unsigned int _vertical_remote_pub_key_length = 0;
+
 public:
   unsigned char local_priv_key[SMKEX_PRIV_KEY_LEN];
   unsigned int local_priv_key_length;
@@ -353,5 +365,20 @@ public:
   }
 
   int getKyberSharedSecret(unsigned char kbuf[]) const;
+
+      bool initVerticalRatchet();
+    bool performVerticalRatchet();
+    bool processVerticalRatchetMessage(const unsigned char* data, uint32_t dataLen);
+    bool shouldPerformVerticalRatchet() const;
+    void resetVerticalRatchetCounters();
+    
+    // Getters
+    bool isVerticalRatchetInitialized() const { return _vertical_ratchet_initialized; }
+    unsigned int getVerticalRatchetCounter() const { return _vertical_ratchet_counter; }
+    bool hasPendingVerticalRatchet() const { return _pending_vertical_ratchet; }
+    int getVerticalLocalPubKey(unsigned char kbuf[]) const;
+
+    
+
 };
 #endif

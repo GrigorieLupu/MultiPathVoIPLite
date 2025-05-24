@@ -100,7 +100,14 @@ SmkexSessionInfo::~SmkexSessionInfo(){
 #if DEBUG
     printf("In SmkexSessionInfo::Destructor with uniqueID=%d\n", _uniqueID);
 #endif
-    if (_dh!=0) free(_dh);
+    if (_dh != 0) {
+        DH_free(_dh);
+        _dh = nullptr;
+    }
+    if (_vertical_dh != 0) {
+        DH_free(_vertical_dh);
+        _vertical_dh = nullptr;
+    }
 #if DEBUG
     printf("SmkexSessionInfo::Destructor ending here\n");
 #endif
@@ -917,22 +924,350 @@ bool SmkexSessionInfo::ratchetReceivingChain(unsigned char message_key[SMKEX_SES
 
 void SmkexSessionInfo::printRatchetState() const {
     printf("=== Ratchet State ===\n");
-    printf("Initialized: %s\n", _ratchet_initialized ? "YES" : "NO");
-    printf("Sending counter: %u\n", _sending_counter);
-    printf("Receiving counter: %u\n", _receiving_counter);
+    printf("Symmetric Ratchet:\n");
+    printf("  Initialized: %s\n", _ratchet_initialized ? "YES" : "NO");
+    printf("  Sending counter: %u\n", _sending_counter);
+    printf("  Receiving counter: %u\n", _receiving_counter);
     
     if (_ratchet_initialized) {
-        printf("Sending chain key (first 8 bytes): ");
+        printf("  Sending chain key (first 8 bytes): ");
         for(int i = 0; i < 8; i++)
             printf("%02X", _sending_chain_key[i]);
         printf("...\n");
         
-        printf("Receiving chain key (first 8 bytes): ");
+        printf("  Receiving chain key (first 8 bytes): ");
         for(int i = 0; i < 8; i++)
             printf("%02X", _receiving_chain_key[i]);
         printf("...\n");
     }
+    
+    printf("Vertical Ratchet:\n");
+    printf("  Initialized: %s\n", _vertical_ratchet_initialized ? "YES" : "NO");
+    printf("  Counter: %u\n", _vertical_ratchet_counter);
+    printf("  Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
+    printf("  Total messages: %u\n", _sending_counter + _receiving_counter);
+    printf("  Next vertical ratchet at: %u messages\n", 
+           ((_sending_counter + _receiving_counter) / VERTICAL_RATCHET_INTERVAL + 1) * VERTICAL_RATCHET_INTERVAL);
+    
+    if (_vertical_ratchet_initialized && _vertical_local_pub_key_length > 0) {
+        printf("  Current vertical key (first 8 bytes): ");
+        for(int i = 0; i < 8; i++)
+            printf("%02X", _vertical_local_pub_key[i]);
+        printf("...\n");
+    }
+    
     printf("==================\n");
+}
+
+bool SmkexSessionInfo::initVerticalRatchet() {
+    printf("=== INITIALIZING VERTICAL RATCHET ===\n");
+    
+    // Creează un nou context DH pentru vertical ratchet
+    if (_vertical_dh) {
+        DH_free(_vertical_dh);
+    }
+    
+    // Citește parametrii DH din fișier
+    BIO* pbio = BIO_new_file(SMKEX_DH_PARAMETER_FILENAME, "r");
+    if (!pbio) {
+        printf("Error: Cannot open DH parameter file for vertical ratchet\n");
+        return false;
+    }
+    
+    _vertical_dh = PEM_read_bio_DHparams(pbio, NULL, NULL, NULL);
+    BIO_free(pbio);
+    
+    if (!_vertical_dh) {
+        printf("Error: Cannot read DH parameters for vertical ratchet\n");
+        return false;
+    }
+    
+    // Generează noile chei DH pentru vertical ratchet
+    if (DH_generate_key(_vertical_dh) != 1) {
+        printf("Error: Cannot generate DH keys for vertical ratchet\n");
+        DH_free(_vertical_dh);
+        _vertical_dh = nullptr;
+        return false;
+    }
+    
+    // Extrage cheia publică
+    BIGNUM *local_pub_key_num, *local_priv_key_num;
+    
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    local_pub_key_num = _vertical_dh->pub_key;
+    local_priv_key_num = _vertical_dh->priv_key;
+#else
+    DH_get0_key(_vertical_dh, (const BIGNUM**)&local_pub_key_num,
+                (const BIGNUM**)&local_priv_key_num);
+#endif
+    
+    _vertical_local_pub_key_length = BN_num_bytes(local_pub_key_num);
+    if (_vertical_local_pub_key_length != SMKEX_PUB_KEY_LEN) {
+        printf("Error: Vertical ratchet DH key length mismatch\n");
+        DH_free(_vertical_dh);
+        _vertical_dh = nullptr;
+        return false;
+    }
+    
+    BN_bn2bin(local_pub_key_num, _vertical_local_pub_key);
+    
+    _vertical_ratchet_initialized = true;
+    
+    printf("Vertical ratchet initialized successfully\n");
+    printf("New vertical DH public key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _vertical_local_pub_key[i]);
+    }
+    printf("...\n");
+    
+    return true;
+}
+
+bool SmkexSessionInfo::shouldPerformVerticalRatchet() const {
+    unsigned int total_messages = _sending_counter + _receiving_counter;
+    
+    // Verificare: dacă am ajuns la multiplu de VERTICAL_RATCHET_INTERVAL
+    bool meets_count_requirement = (total_messages > 0) && 
+                                  (total_messages % VERTICAL_RATCHET_INTERVAL == 0);
+    
+    printf("=== VERTICAL RATCHET AUTO-CHECK ===\n");
+    printf("Buddy: %s\n", _buddy.c_str());
+    printf("Sending: %u, Receiving: %u, Total: %u\n", 
+           _sending_counter, _receiving_counter, total_messages);
+    printf("Interval: %d, Modulo: %u\n", VERTICAL_RATCHET_INTERVAL, total_messages % VERTICAL_RATCHET_INTERVAL);
+    printf("Meets count requirement: %s\n", meets_count_requirement ? "YES" : "NO");
+    printf("Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
+    
+    // 🔥 CRUCIAL FIX: Dacă suntem la multiplu și avem pending, înseamnă că 
+    // cealaltă parte nu a răspuns - să curățăm pending și să reîncercăm
+    if (meets_count_requirement && _pending_vertical_ratchet) {
+        printf("🔧 CLEARING stuck pending vertical ratchet to retry\n");
+        // Cast pentru a putea modifica
+        const_cast<SmkexSessionInfo*>(this)->_pending_vertical_ratchet = false;
+    }
+    
+    bool should_ratchet = meets_count_requirement && !_pending_vertical_ratchet;
+    
+    printf("Final decision: %s\n", should_ratchet ? "YES" : "NO");
+    printf("=====================================\n");
+    
+    return should_ratchet;
+}
+
+bool SmkexSessionInfo::performVerticalRatchet() {
+    if (!_ratchet_initialized) {
+        printf("ERROR: Cannot perform vertical ratchet without initialized symmetric ratchet\n");
+        return false;
+    }
+    
+    printf("\n");
+    printf("██████████████████████████████████████████████████████████\n");
+    printf("█               VERTICAL RATCHET STARTED                █\n");
+    printf("██████████████████████████████████████████████████████████\n");
+    printf("Buddy: %s\n", _buddy.c_str());
+    printf("Current message count: %u (sending) + %u (receiving) = %u\n",
+           _sending_counter, _receiving_counter, _sending_counter + _receiving_counter);
+    
+    // Afișează cheia de sesiune ÎNAINTE de vertical ratchet
+    printf("\n=== BEFORE VERTICAL RATCHET ===\n");
+    printf("Current session key (first 32 bytes): ");
+    for(int i = 0; i < 32 && i < (int)_session_key_len; i++) {
+        printf("%02X", _session_key[i]);
+    }
+    printf("\n");
+    printf("Current sending chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _sending_chain_key[i]);
+    }
+    printf("\n");
+    printf("Current receiving chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _receiving_chain_key[i]);
+    }
+    printf("\n");
+    
+    // Inițializează vertical ratchet dacă nu este deja inițializat
+    if (!_vertical_ratchet_initialized) {
+        if (!initVerticalRatchet()) {
+            printf("ERROR: Failed to initialize vertical ratchet\n");
+            return false;
+        }
+    }
+    
+    _pending_vertical_ratchet = true;
+    _vertical_ratchet_counter++;
+    
+    printf("Vertical ratchet initiated (counter: %u)\n", _vertical_ratchet_counter);
+    printf("Waiting for partner's response...\n");
+    
+    return true;
+}
+
+bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, uint32_t dataLen) {
+    printf("\n");
+    printf("██████████████████████████████████████████████████████████\n");
+    printf("█           PROCESSING VERTICAL RATCHET MESSAGE         █\n");
+    printf("██████████████████████████████████████████████████████████\n");
+    
+    if (dataLen < SMKEX_PUB_KEY_LEN) {
+        printf("ERROR: Insufficient data for vertical ratchet message\n");
+        return false;
+    }
+    
+    // Salvează cheia publică primită
+    _vertical_remote_pub_key_length = SMKEX_PUB_KEY_LEN;
+    memcpy(_vertical_remote_pub_key, data, SMKEX_PUB_KEY_LEN);
+    
+    printf("Received vertical ratchet public key:\n");
+    for(int i = 0; i < (int)_vertical_remote_pub_key_length; i++) {
+        printf("%02X", _vertical_remote_pub_key[i]);
+        if ((i + 1) % 32 == 0) printf("\n");
+    }
+    if (_vertical_remote_pub_key_length % 32 != 0) printf("\n");
+    
+    // Inițializează propriile chei pentru vertical ratchet dacă nu sunt inițializate
+    if (!_vertical_ratchet_initialized) {
+        if (!initVerticalRatchet()) {
+            printf("ERROR: Failed to initialize vertical ratchet\n");
+            return false;
+        }
+    }
+    
+    printf("Our vertical ratchet public key:\n");
+    for(int i = 0; i < (int)_vertical_local_pub_key_length; i++) {
+        printf("%02X", _vertical_local_pub_key[i]);
+        if ((i + 1) % 32 == 0) printf("\n");
+    }
+    if (_vertical_local_pub_key_length % 32 != 0) printf("\n");
+    
+    // Calculează noul secret partajat DH
+    unsigned char new_dh_secret[SMKEX_DH_KEY_LEN];
+    BIGNUM *remote_pub_key_bn = BN_bin2bn(_vertical_remote_pub_key, 
+                                          _vertical_remote_pub_key_length, NULL);
+    
+    int new_dh_len = DH_compute_key(new_dh_secret, remote_pub_key_bn, _vertical_dh);
+    BN_free(remote_pub_key_bn);
+    
+    if (new_dh_len <= 0) {
+        printf("ERROR: Cannot compute new DH secret for vertical ratchet\n");
+        return false;
+    }
+    
+    printf("Computed NEW DH secret (%d bytes):\n", new_dh_len);
+    for(int i = 0; i < new_dh_len; i++) {
+        printf("%02X", new_dh_secret[i]);
+        if ((i + 1) % 32 == 0) printf("\n");
+    }
+    if (new_dh_len % 32 != 0) printf("\n");
+    
+    // Salvează cheia de sesiune VECHE pentru comparație
+    unsigned char old_session_key[SMKEX_SESSION_KEY_LEN];
+    memcpy(old_session_key, _session_key, _session_key_len);
+    
+    // Combină secretul DH nou cu cheia de sesiune actuală pentru a deriva o nouă cheie de sesiune
+    unsigned char combined_input[SMKEX_SESSION_KEY_LEN + SMKEX_DH_KEY_LEN];
+    memcpy(combined_input, _session_key, _session_key_len);
+    memcpy(combined_input + _session_key_len, new_dh_secret, new_dh_len);
+    
+    // Derivă noua cheie de sesiune
+    unsigned char new_session_key[SMKEX_SESSION_KEY_LEN];
+    unsigned int new_session_key_len;
+    nist_800_kdf(combined_input, _session_key_len + new_dh_len, 
+                 new_session_key, &new_session_key_len);
+    
+    printf("\n=== KEY TRANSFORMATION ===\n");
+    printf("OLD session key (first 32 bytes): ");
+    for(int i = 0; i < 32 && i < (int)_session_key_len; i++) {
+        printf("%02X", old_session_key[i]);
+    }
+    printf("\n");
+    
+    printf("NEW session key (first 32 bytes): ");
+    for(int i = 0; i < 32 && i < (int)new_session_key_len; i++) {
+        printf("%02X", new_session_key[i]);
+    }
+    printf("\n");
+    
+    // Verifică dacă cheia s-a schimbat efectiv
+    bool key_changed = (memcmp(old_session_key, new_session_key, 32) != 0);
+    printf("Key actually changed: %s\n", key_changed ? "YES ✓" : "NO ✗");
+    
+    // Actualizează cheia de sesiune
+    memcpy(_session_key, new_session_key, new_session_key_len);
+    _session_key_len = new_session_key_len;
+    
+    // Salvează cheile de lanț VECHI pentru comparație
+    unsigned char old_sending_chain[32], old_receiving_chain[32];
+    memcpy(old_sending_chain, _sending_chain_key, 32);
+    memcpy(old_receiving_chain, _receiving_chain_key, 32);
+    
+    // Re-inițializează symmetric ratchet cu noua cheie de sesiune
+    printf("\n=== REINITIALIZING SYMMETRIC RATCHET ===\n");
+    initializeRatchet();
+    
+    printf("OLD sending chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", old_sending_chain[i]);
+    }
+    printf("\n");
+    
+    printf("NEW sending chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _sending_chain_key[i]);
+    }
+    printf("\n");
+    
+    printf("OLD receiving chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", old_receiving_chain[i]);
+    }
+    printf("\n");
+    
+    printf("NEW receiving chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _receiving_chain_key[i]);
+    }
+    printf("\n");
+    
+    _pending_vertical_ratchet = false;
+    _vertical_ratchet_counter++;
+    
+    printf("\n");
+    printf("██████████████████████████████████████████████████████████\n");
+    printf("█          VERTICAL RATCHET COMPLETED SUCCESSFULLY      █\n");
+    printf("█                   Counter: %3u                        █\n", _vertical_ratchet_counter);
+    printf("██████████████████████████████████████████████████████████\n");
+    printf("\n");
+    
+    return true;
+}
+
+void SmkexSessionInfo::resetVerticalRatchetCounters() {
+    printf("=== RESETTING VERTICAL RATCHET COUNTERS ===\n");
+    
+    _vertical_ratchet_counter = 0;
+    _pending_vertical_ratchet = false;
+    
+    if (_vertical_dh) {
+        DH_free(_vertical_dh);
+        _vertical_dh = nullptr;
+    }
+    
+    _vertical_ratchet_initialized = false;
+    memset(_vertical_local_pub_key, 0, sizeof(_vertical_local_pub_key));
+    memset(_vertical_remote_pub_key, 0, sizeof(_vertical_remote_pub_key));
+    _vertical_local_pub_key_length = 0;
+    _vertical_remote_pub_key_length = 0;
+    
+    printf("Vertical ratchet state reset\n");
+}
+
+int SmkexSessionInfo::getVerticalLocalPubKey(unsigned char kbuf[]) const {
+    if (kbuf != NULL && _vertical_local_pub_key_length > 0) {
+        memcpy(kbuf, _vertical_local_pub_key, _vertical_local_pub_key_length);
+    }
+    
+    return _vertical_local_pub_key_length;
 }
 
 

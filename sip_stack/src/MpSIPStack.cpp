@@ -495,11 +495,10 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
     // Get session for the sender
     SmkexSessionInfo& session = smkex->getSessionInfo(senderSerial);
 
-    // IMPROVED: Use hash-based duplicate detection instead of exact message comparison
+    // Hash-based duplicate detection
     static std::map<std::string, std::string> lastProcessedHashes;
     std::string currentMessage(body->ptr, body->slen);
     
-    // Calculate message hash for duplicate detection
     unsigned char msgHash[32];
     compute_sha256(msgHash, (unsigned char*)currentMessage.c_str(), currentMessage.length());
     
@@ -509,31 +508,42 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
     }
     std::string currentHash(hashStr);
     
-    // Check for duplicate based on hash
     if (lastProcessedHashes[senderSerial] == currentHash) {
-        MP_LOG1("Warning: Duplicate message detected based on hash, skipping processing");
+        MP_LOG1("Warning: Duplicate message detected, skipping");
         return;
     }
-    
-    // Store hash before processing (to prevent reentry issues)
     lastProcessedHashes[senderSerial] = currentHash;
     
     // Get ratcheted key for this message
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
-        printf("BEFORE ratcheting - Receiving counter: %u\n", session.getReceivingCounter());
+        printf("🔍 BEFORE ratcheting - Receiving counter: %u\n", session.getReceivingCounter());
 
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
         if (!session.ratchetReceivingChain(ratchet_key)) {
             MP_LOG1("Error: Failed to ratchet receiving chain");
-            // Restore the hash since processing failed
             lastProcessedHashes.erase(senderSerial);
             return;
         }
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
         MP_LOG2_INT("Using ratcheted key for message from counter: ", session.getReceivingCounter() - 1);
+        
+        // 🔥 CRUCIAL FIX: Verifică vertical ratchet DUPĂ receiving counter update
+        printf("🔍 CHECKING for vertical ratchet AFTER receiving counter update...\n");
+        printf("📊 Current state: Sending=%u, Receiving=%u, Total=%u\n", 
+               session.getSendingCounter(), session.getReceivingCounter(), 
+               session.getSendingCounter() + session.getReceivingCounter());
+        
+        // Verifică dacă trebuie să facă vertical ratchet
+        if (session.shouldPerformVerticalRatchet()) {
+            printf("🚨 RECEIVING SIDE TRIGGERS VERTICAL RATCHET!\n");
+            if (smkex->checkAndPerformVerticalRatchet(senderSerial) < 0) {
+                MP_LOG1("Warning: Vertical ratchet failed on receive side");
+            }
+        } else {
+            printf("ℹ️  No vertical ratchet needed on receive side\n");
+        }
     } else {
-        // Fallback to session key if ratchet not initialized
         if (!getOobKey(senderSerial, key, sizeof(key))) {
             MP_LOG1("Error: No key available for decryption");
             lastProcessedHashes.erase(senderSerial);
@@ -554,7 +564,6 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
 
     if (ret != 1) {
         MP_LOG1("Error: Message decryption failed");
-        // Restore hash since decryption failed - might be out of sync
         lastProcessedHashes.erase(senderSerial);
         delete[] decMsg;
         return;
@@ -641,13 +650,10 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
 
     /*Account ID*/
     int accID = MpService::instance()->getSIPStack()->getAccountID();
-    
-    //verify account id
     if (accID < 0)
         return MP_GENERAL_ERR;
 
     uint8_t iv[SESSION_IV_LENGTH] = { 0 };
-    /* Generate IV */
     if (mp_randomize(iv, sizeof(iv)) != 1)
         return MP_GENERAL_ERR;
 
@@ -668,7 +674,7 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
     // Get session for the receiver
     SmkexSessionInfo& session = smkex->getSessionInfo(serial);
     
-    /* Get key */
+    /* Get key BEFORE checking vertical ratchet (important!) */
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
@@ -679,12 +685,17 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
         MP_LOG2_INT("Using ratcheted key for message with counter: ", session.getSendingCounter() - 1);
     } else {
-        // Fallback to session key if ratchet not initialized
         if (!getOobKey(serial, key, sizeof(key))) {
             MP_LOG1("Error: No key available for encryption");
             return MP_GENERAL_ERR;
         }
         MP_LOG1("Warning: Using session key (ratchet not initialized)");
+    }
+
+    // DUPĂ ce am incrementat counterul, verificăm vertical ratchet
+    printf("🔍 CHECKING for vertical ratchet AFTER sending counter update...\n");
+    if (smkex->checkAndPerformVerticalRatchet(serial) < 0) {
+        MP_LOG1("Warning: Vertical ratchet failed, continuing with current keys");
     }
 
     /* Encrypt the message */
@@ -713,9 +724,9 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
     /*Receiver uri*/
     pj_str_t toUri = pj_str(const_cast<char*>(uri.c_str()));
 
-	MP_LOG1("Mesaj criptat (hex):");
-	for (uint32_t i = 0; i < encMsgLen; ++i) printf("%02X", encMsg[i]);
-	printf("\n");
+    MP_LOG1("Mesaj criptat (hex):");
+    for (uint32_t i = 0; i < encMsgLen; ++i) printf("%02X", encMsg[i]);
+    printf("\n");
 
     /*Send message*/
     pj_status_t status = pjsua_im_send(accID, &toUri, MP_NULL, &msgData,

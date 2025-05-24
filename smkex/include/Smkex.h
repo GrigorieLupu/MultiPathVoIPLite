@@ -301,6 +301,10 @@ public:
      * @return true dacă Kyber este activat, false în caz contrar
      */
     inline bool isKyberEnabled() const { return SMKEX_KYBER_ENABLED; }
+
+	int checkAndPerformVerticalRatchet(const std::string &buddy);
+
+	int forceVerticalRatchet(const std::string &buddy);
 };
 
 int sendKyberCiphertext(SmkexSessionInfo &session, std::string buddy);
