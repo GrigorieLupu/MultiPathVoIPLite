@@ -42,17 +42,6 @@
 #define SMKEX_DH_KEY_LEN 256
 #define SMKEX_SESSION_KEY_LEN 64
 
-#define VERTICAL_RATCHETING_INTERVAL 5
-#define MAX_STORED_KEYS 10
-
-struct StoredDHKey {
-    unsigned char dh_secret[SMKEX_DH_KEY_LEN];
-    unsigned int dh_secret_len;
-    unsigned int counter_from;    // De la ce counter era validă această cheie
-    unsigned int counter_to;      // Până la ce counter era validă această cheie
-    bool is_valid;
-};
-
 class SmkexSessionInfo
 {
 private:
@@ -82,28 +71,6 @@ private:
   unsigned int _sending_counter;
   unsigned int _receiving_counter;
   bool _ratchet_initialized;
-
-  // Vertical Ratcheting
-  unsigned int _vertical_ratchet_counter;              // Counter pentru vertical ratchet
-  unsigned int _last_vertical_ratchet_at_counter;      // La ce counter s-a făcut ultimul vertical ratchet
-  bool _vertical_ratchet_pending;                      // Dacă avem un vertical ratchet în curs
-
-    // Current DH secret folosit pentru derivarea cheilor
-  unsigned char _current_dh_secret[SMKEX_DH_KEY_LEN];
-  unsigned int _current_dh_secret_len;
-  
-  // Array pentru păstrarea cheilor DH anterioare (pentru mesajele out-of-order)
-  StoredDHKey _stored_dh_keys[MAX_STORED_KEYS];
-  unsigned int _stored_keys_count;
-  
-  // Flag pentru a ști dacă suntem în mijlocul unui vertical ratchet
-  bool _awaiting_vertical_ratchet_response;
-  
-  // Temporare DH keys pentru vertical ratchet în curs
-  unsigned char _temp_local_pub_key[SMKEX_PUB_KEY_LEN];
-  unsigned int _temp_local_pub_key_length;
-  unsigned char _temp_local_priv_key[SMKEX_PRIV_KEY_LEN];
-  unsigned int _temp_local_priv_key_length;
 
 public:
   unsigned char local_priv_key[SMKEX_PRIV_KEY_LEN];
@@ -246,73 +213,8 @@ public:
 
 
   // Vertical Ratcheting
-  // VERTICAL RATCHETING - New methods
-  /**
-   * @brief Verifică dacă este timpul pentru un vertical ratchet
-   * @return true dacă trebuie să facem vertical ratchet
-   */
-  bool shouldPerformVerticalRatchet() const;
   
-  /**
-   * @brief Inițiază un vertical ratchet - generează noi chei DH
-   * @return 0 dacă reușește, -1 în caz de eroare
-   */
-  int initiateVerticalRatchet();
-  
-  /**
-   * @brief Procesează o cheie DH primită în cadrul vertical ratchet
-   * @param[in] received_pub_key Cheia publică DH primită
-   * @param[in] key_len Lungimea cheii
-   * @return 0 dacă reușește, -1 în caz de eroare
-   */
-  int processVerticalRatchetKey(const unsigned char* received_pub_key, unsigned int key_len);
-  
-  /**
-   * @brief Finalizează vertical ratchet și re-derivă cheia de sesiune
-   * @return 0 dacă reușește, -1 în caz de eroare
-   */
-  int finalizeVerticalRatchet();
-  
-  /**
-   * @brief Găsește cheia DH potrivită pentru un counter specific (pentru mesaje out-of-order)
-   * @param[in] counter Counter-ul mesajului
-   * @param[out] dh_secret Buffer pentru secretul DH
-   * @param[out] secret_len Lungimea secretului
-   * @return true dacă găsește cheia, false altfel
-   */
-  bool findDHSecretForCounter(unsigned int counter, unsigned char* dh_secret, unsigned int* secret_len);
-  
-  /**
-   * @brief Păstrează cheia DH curentă pentru mesajele out-of-order
-   */
-  void storePreviousDHKey();
-  
-  /**
-   * @brief Curăță cheile DH vechi care nu mai sunt necesare
-   */
-  void cleanupOldDHKeys();
-  
-  /**
-   * @brief Verifică dacă suntem în așteptarea unui răspuns de vertical ratchet
-   */
-  bool isAwaitingVerticalRatchetResponse() const { return _awaiting_vertical_ratchet_response; }
-  
-  /**
-   * @brief Setează starea de așteptare pentru vertical ratchet
-   */
-  void setAwaitingVerticalRatchetResponse(bool waiting) { _awaiting_vertical_ratchet_response = waiting; }
-  
-  /**
-   * @brief Obține counter-ul vertical ratchet
-   */
-  unsigned int getVerticalRatchetCounter() const { return _vertical_ratchet_counter; }
-  
-  /**
-   * @brief Printează starea vertical ratchet pentru debugging
-   */
-  void printVerticalRatchetState() const;
-  
-  // VERTICAL RACHETING - End of new methods
+
 
   int initKeysfromDH(void);
 

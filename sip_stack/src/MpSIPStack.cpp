@@ -518,137 +518,20 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
     // Store hash before processing (to prevent reentry issues)
     lastProcessedHashes[senderSerial] = currentHash;
     
-    // VERTICAL RATCHETING - Try different DH secrets for out-of-order messages
+    // Get ratcheted key for this message
     char key[SESSION_KEY_LENGTH] = { 0 };
-    bool decryption_successful = false;
-    unsigned int attempted_counter = session.getReceivingCounter();
-    
     if (session.isRatchetInitialized()) {
-        printf("=== VERTICAL RATCHET MESSAGE DECRYPTION ===\n");
-        printf("Sender: %s\n", senderSerial.c_str());
-        printf("Current receiving counter: %u\n", session.getReceivingCounter());
-        
-        // First, try with the current receiving chain
-        printf("Trying with current receiving counter: %u\n", attempted_counter);
-        
+        printf("BEFORE ratcheting - Receiving counter: %u\n", session.getReceivingCounter());
+
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
-        if (session.ratchetReceivingChain(ratchet_key)) {
-            memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
-            
-            // Try to decrypt with this key
-            size_t decMsgLen;
-            uint8_t *decMsg = new uint8_t[body->slen];
-            
-            int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
-                                        body->slen - SESSION_IV_LENGTH,
-                                        reinterpret_cast<const unsigned char *>(key),
-                                        reinterpret_cast<const unsigned char*>(body->ptr),
-                                        decMsg, &decMsgLen);
-            
-            if (ret == 1) {
-                decryption_successful = true;
-                printf("Decryption successful with current receiving chain\n");
-                
-                // Process the decrypted message
-                MP_LOG1("Mesaj decriptat:");
-                printf("%s\n", (char*)decMsg);
-                
-                MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
-                        decMsg, decMsgLen);
-                
-                printf("==========================================\n");
-                delete[] decMsg;
-                return;
-            }
-            
-            delete[] decMsg;
-            printf("Decryption failed with current receiving chain\n");
-        }
-        
-        // If current chain failed, try with stored DH keys for out-of-order messages
-        if (!decryption_successful) {
-            printf("Trying with stored DH keys for out-of-order message...\n");
-            
-            // Try a few counters around the current one
-            for (int offset = -2; offset <= 2 && !decryption_successful; offset++) {
-                if (offset == 0) continue; // Already tried current counter
-                
-                unsigned int test_counter = attempted_counter + offset;
-                if (test_counter < 0) continue;
-                
-                unsigned char stored_dh_secret[SMKEX_DH_KEY_LEN];
-                unsigned int stored_secret_len;
-                
-                if (session.findDHSecretForCounter(test_counter, stored_dh_secret, &stored_secret_len)) {
-                    printf("Trying counter %u with stored DH secret\n", test_counter);
-                    
-                    // Re-derive session key with this DH secret + Kyber
-                    unsigned char test_session_key[SMKEX_SESSION_KEY_LEN];
-                    unsigned int test_key_len;
-                    
-                    if (session.isKyberInitialised()) {
-                        unsigned char kyber_secret[SMKEX_KYBER_SHARED_SECRET_LEN];
-                        int kyber_len = session.getKyberSharedSecret(kyber_secret);
-                        
-                        if (kyber_len > 0) {
-                            unsigned char combined_key[SMKEX_DH_KEY_LEN + SMKEX_KYBER_SHARED_SECRET_LEN];
-                            memcpy(combined_key, stored_dh_secret, stored_secret_len);
-                            memcpy(combined_key + stored_secret_len, kyber_secret, kyber_len);
-                            
-                            nist_800_kdf(combined_key, stored_secret_len + kyber_len, 
-                                       test_session_key, &test_key_len);
-                        } else {
-                            nist_800_kdf(stored_dh_secret, stored_secret_len, 
-                                       test_session_key, &test_key_len);
-                        }
-                    } else {
-                        nist_800_kdf(stored_dh_secret, stored_secret_len, 
-                                   test_session_key, &test_key_len);
-                    }
-                    
-                    // Derive message key from this session key for the specific counter
-                    // This is a simplified approach - in practice you'd need to properly 
-                    // derive the chain key and then the message key
-                    memcpy(key, test_session_key, SESSION_KEY_LENGTH);
-                    
-                    // Try decryption
-                    size_t decMsgLen;
-                    uint8_t *decMsg = new uint8_t[body->slen];
-                    
-                    int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
-                                                body->slen - SESSION_IV_LENGTH,
-                                                reinterpret_cast<const unsigned char *>(key),
-                                                reinterpret_cast<const unsigned char*>(body->ptr),
-                                                decMsg, &decMsgLen);
-                    
-                    if (ret == 1) {
-                        decryption_successful = true;
-                        printf("Decryption successful with stored DH key for counter %u\n", test_counter);
-                        
-                        // Process the decrypted message
-                        MP_LOG1("Mesaj decriptat (out-of-order):");
-                        printf("%s\n", (char*)decMsg);
-                        
-                        MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
-                                decMsg, decMsgLen);
-                        
-                        delete[] decMsg;
-                        break;
-                    }
-                    
-                    delete[] decMsg;
-                }
-            }
-        }
-        
-        if (!decryption_successful) {
-            MP_LOG1("Error: Message decryption failed with all available keys");
-            // Restore hash since decryption failed
+        if (!session.ratchetReceivingChain(ratchet_key)) {
+            MP_LOG1("Error: Failed to ratchet receiving chain");
+            // Restore the hash since processing failed
             lastProcessedHashes.erase(senderSerial);
+            return;
         }
-        
-        printf("==========================================\n");
-        
+        memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
+        MP_LOG2_INT("Using ratcheted key for message from counter: ", session.getReceivingCounter() - 1);
     } else {
         // Fallback to session key if ratchet not initialized
         if (!getOobKey(senderSerial, key, sizeof(key))) {
@@ -657,32 +540,33 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
             return;
         }
         MP_LOG1("Warning: Using session key (ratchet not initialized)");
-        
-        /* Decrypt the message */
-        size_t decMsgLen;
-        uint8_t *decMsg = new uint8_t[body->slen];
-
-        int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
-                                    body->slen - SESSION_IV_LENGTH,
-                                    reinterpret_cast<const unsigned char *>(key),
-                                    reinterpret_cast<const unsigned char*>(body->ptr),
-                                    decMsg, &decMsgLen);
-
-        if (ret != 1) {
-            MP_LOG1("Error: Message decryption failed");
-            lastProcessedHashes.erase(senderSerial);
-            delete[] decMsg;
-            return;
-        }
-
-        MP_LOG1("Mesaj decriptat:");
-        printf("%s\n", (char*)decMsg);
-
-        MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
-                decMsg, decMsgLen);
-
-        delete[] decMsg;
     }
+    
+    /* Decrypt the message */
+    size_t decMsgLen;
+    uint8_t *decMsg = new uint8_t[body->slen];
+
+    int ret = mp_aesgcm_decrypt(reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
+                                body->slen - SESSION_IV_LENGTH,
+                                reinterpret_cast<const unsigned char *>(key),
+                                reinterpret_cast<const unsigned char*>(body->ptr),
+                                decMsg, &decMsgLen);
+
+    if (ret != 1) {
+        MP_LOG1("Error: Message decryption failed");
+        // Restore hash since decryption failed - might be out of sync
+        lastProcessedHashes.erase(senderSerial);
+        delete[] decMsg;
+        return;
+    }
+
+    MP_LOG1("Mesaj decriptat:");
+    printf("%s\n", (char*)decMsg);
+
+    MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
+            decMsg, decMsgLen);
+
+    delete[] decMsg;
 }
 
 void MpSIPStack::on_pager_status(pjsua_call_id call_id, const pj_str_t *to,
@@ -784,24 +668,6 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
     // Get session for the receiver
     SmkexSessionInfo& session = smkex->getSessionInfo(serial);
     
-    // VERTICAL RATCHETING - Check if we need to perform vertical ratchet before sending
-    if (session.isRatchetInitialized()) {
-        printf("=== PRE-SEND VERTICAL RATCHET CHECK ===\n");
-        printf("Buddy: %s\n", serial);
-        printf("Current sending counter: %u\n", session.getSendingCounter());
-        session.printVerticalRatchetState();
-        
-        int ratchet_result = smkex->checkAndInitiateVerticalRatchet(session, std::string(serial));
-        if (ratchet_result != 0) {
-            MP_LOG1("Error during vertical ratchet check");
-            return MP_GENERAL_ERR;
-        }
-        printf("=======================================\n");
-        
-        // Cleanup old DH keys periodically
-        session.cleanupOldDHKeys();
-    }
-    
     /* Get key */
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
@@ -847,9 +713,9 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
     /*Receiver uri*/
     pj_str_t toUri = pj_str(const_cast<char*>(uri.c_str()));
 
-    MP_LOG1("Mesaj criptat (hex):");
-    for (uint32_t i = 0; i < encMsgLen; ++i) printf("%02X", encMsg[i]);
-    printf("\n");
+	MP_LOG1("Mesaj criptat (hex):");
+	for (uint32_t i = 0; i < encMsgLen; ++i) printf("%02X", encMsg[i]);
+	printf("\n");
 
     /*Send message*/
     pj_status_t status = pjsua_im_send(accID, &toUri, MP_NULL, &msgData,
