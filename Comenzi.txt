@@ -1,0 +1,2 @@
+./MpVoIPLite Grigorie Adina 127.0.0.1 5061 8080 Grigorie2 Adina2 127.0.0.1 8080 ../certs/mpvoipapp/mpvoipapp.crt.pem ../certs/mpvoipapp/mpvoipapp.key.pem
+./MpVoIPLite Adina Grigorie 127.0.0.1 5061 8080 Adina2 Grigorie2 127.0.0.1 8080 ../certs/mpvoipapp/mpvoipapp.crt.pem ../certs/mpvoipapp/mpvoipapp.key.pem init

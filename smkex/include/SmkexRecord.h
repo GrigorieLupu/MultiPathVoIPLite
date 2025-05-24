@@ -15,7 +15,8 @@ enum SMKEX_T4M_Type {
   handshakeNonce = 2,
   handshakeNonceH = 3,
   alert = 4,
-  handshakeKyberCiphertext = 5  // Adăugați acest nou tip
+  handshakeKyberCiphertext = 5,  // Adăugați acest nou tip
+  ratchetDHKey = 6
 };
 
 

@@ -54,7 +54,8 @@
         "ctime": "cpp",
         "set": "cpp",
         "unordered_set": "cpp",
-        "numbers": "cpp"
+        "numbers": "cpp",
+        "iomanip": "cpp"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/g++"
 }

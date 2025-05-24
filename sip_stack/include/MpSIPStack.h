@@ -12,6 +12,8 @@
 #include "IOobKeySetup.h"
 #include <pjsua-lib/pjsua.h>
 
+#define VERTICAL_RATCHET_INTERVAL 5
+
 class MpSIPStack: public MpISIPStack {
 	friend class MpSingleton<MpSIPStack> ;
 	friend class MpUserAccount;
