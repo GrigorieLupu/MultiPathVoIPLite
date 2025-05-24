@@ -610,27 +610,48 @@ switch((int)rec.getType()){
     MP_LOG1("received verticalRatchetInitiate\n");
     
     if (SMKEX_CHANNEL_0 == channel && session.getState() == SmkexState::STATEConnected) {
-        // Procesează mesajul de inițiere vertical ratchet
-        if (!session.processVerticalRatchetMessage((const unsigned char*)rec.getData(NULL), rec.getData(NULL))) {
-            MP_LOG1("Error processing vertical ratchet initiate message\n");
-            break;
+        printf("\n██████████████████████████████████████████████████████████\n");
+        printf("█         RECEIVED VERTICAL RATCHET REQUEST              █\n");
+        printf("██████████████████████████████████████████████████████████\n");
+        printf("From buddy: %s\n", buddy.c_str());
+        printf("Our role: %s\n", session.isInitiator() ? "INITIATOR" : "RESPONDER");
+        
+        // Extract the received public key
+        unsigned char received_pub_key[SMKEX_PUB_KEY_LEN];
+        if (rec.getData(NULL) >= SMKEX_PUB_KEY_LEN) {
+            rec.getData(received_pub_key);
+            
+            printf("Received vertical public key (first 16 bytes): ");
+            for(int i = 0; i < 16; i++) {
+                printf("%02X", received_pub_key[i]);
+            }
+            printf("...\n");
+            
+            // Process the vertical ratchet message
+            if (session.processVerticalRatchetMessage(received_pub_key, SMKEX_PUB_KEY_LEN)) {
+                printf("✅ Vertical ratchet processed successfully\n");
+                
+                // Send response with our public key
+                if (session.isVerticalRatchetInitialized()) {
+                    unsigned char our_vertical_key[SMKEX_PUB_KEY_LEN];
+                    if (session.getVerticalLocalPubKey(our_vertical_key) > 0) {
+                        SmkexT4mRecord response_rec(0, buddy, getClientID(), verticalRatchetResponse,
+                            SMKEX_T4M_PROTOCOL_VERSION, SMKEX_PUB_KEY_LEN, our_vertical_key);
+                        
+                        response_rec.printRecord();
+                        sendRecord(response_rec, buddy, SMKEX_CHANNEL_0);
+                        
+                        printf("📤 Sent vertical ratchet response\n");
+                    }
+                }
+            } else {
+                printf("❌ Failed to process vertical ratchet message\n");
+            }
+        } else {
+            printf("❌ Insufficient data in vertical ratchet message\n");
         }
         
-        // Trimite răspunsul cu propria cheie publică DH
-        if (session.isVerticalRatchetInitialized()) {
-            unsigned char our_vertical_key[SMKEX_PUB_KEY_LEN];
-            // Obține cheia noastră publică pentru vertical ratchet
-            // (această metodă trebuie adăugată în SmkexSessionInfo)
-            session.getVerticalLocalPubKey(our_vertical_key);
-            
-            SmkexT4mRecord response_rec(0, buddy, getClientID(), verticalRatchetResponse,
-                SMKEX_T4M_PROTOCOL_VERSION, SMKEX_PUB_KEY_LEN, our_vertical_key);
-            
-            response_rec.printRecord();
-            sendRecord(response_rec, buddy, SMKEX_CHANNEL_0);
-            
-            MP_LOG1("Sent vertical ratchet response\n");
-        }
+        printf("██████████████████████████████████████████████████████████\n");
     }
     break;
     
@@ -639,13 +660,34 @@ case verticalRatchetResponse:
     
     if (SMKEX_CHANNEL_0 == channel && session.getState() == SmkexState::STATEConnected &&
         session.hasPendingVerticalRatchet()) {
-        // Procesează răspunsul la vertical ratchet
-        if (!session.processVerticalRatchetMessage((const unsigned char*)rec.getData(NULL), rec.getData(NULL))) {
-            MP_LOG1("Error processing vertical ratchet response message\n");
-            break;
+        
+        printf("\n██████████████████████████████████████████████████████████\n");
+        printf("█         RECEIVED VERTICAL RATCHET RESPONSE             █\n");
+        printf("██████████████████████████████████████████████████████████\n");
+        printf("From buddy: %s\n", buddy.c_str());
+        
+        // Extract the received public key
+        unsigned char received_pub_key[SMKEX_PUB_KEY_LEN];
+        if (rec.getData(NULL) >= SMKEX_PUB_KEY_LEN) {
+            rec.getData(received_pub_key);
+            
+            printf("Received response public key (first 16 bytes): ");
+            for(int i = 0; i < 16; i++) {
+                printf("%02X", received_pub_key[i]);
+            }
+            printf("...\n");
+            
+            // Process the response
+            if (session.processVerticalRatchetMessage(received_pub_key, SMKEX_PUB_KEY_LEN)) {
+                printf("✅ Vertical ratchet completed successfully\n");
+            } else {
+                printf("❌ Failed to process vertical ratchet response\n");
+            }
+        } else {
+            printf("❌ Insufficient data in vertical ratchet response\n");
         }
         
-        MP_LOG1("Vertical ratchet completed successfully\n");
+        printf("██████████████████████████████████████████████████████████\n");
     }
     break;
 

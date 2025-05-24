@@ -690,25 +690,26 @@ void SmkexSessionInfo::initializeRatchet() {
         return;
     }
     
-    // DEBUG: Verify buffer sizes
-    printf("SMKEX_SESSION_KEY_LEN = %d\n", SMKEX_SESSION_KEY_LEN);
-    printf("_session_key_len = %u\n", _session_key_len);
-    printf("sizeof(_sending_chain_key) = %zu\n", sizeof(_sending_chain_key));
-    printf("sizeof(_receiving_chain_key) = %zu\n", sizeof(_receiving_chain_key));
-    printf("sizeof(_session_key) = %zu\n", sizeof(_session_key));
+    bool is_first_init = !_ratchet_initialized;
     
     // Reset the ratchet completely
     _ratchet_initialized = false;
     
-    // FIXED: Clear chain key buffers completely before use
+    // Clear chain key buffers completely before use
     memset(_sending_chain_key, 0, sizeof(_sending_chain_key));
     memset(_receiving_chain_key, 0, sizeof(_receiving_chain_key));
     
-    // Initialize counters based on role
-    _sending_counter = 0;
-    _receiving_counter = 0;
+    // Only reset counters on first initialization, not on vertical ratchet
+    if (is_first_init) {
+        _sending_counter = 0;
+        _receiving_counter = 0;
+        printf("First ratchet init - counters reset to 0\n");
+    } else {
+        printf("Vertical ratchet re-init - keeping counters at S:%u R:%u\n", 
+               _sending_counter, _receiving_counter);
+    }
+    
 
-    // Derive initial chain keys from session key using KDF
     printf("Session key (%u bytes): ", _session_key_len);
     for(int i = 0; i < (int)_session_key_len && i < 32; i++)
         printf("%02X", _session_key[i]);
@@ -719,40 +720,41 @@ void SmkexSessionInfo::initializeRatchet() {
            _iAmSessionInitiator ? "INITIATOR" : "RESPONDER", 
            _sessionID, _buddy.c_str());
     
-    // Use a proper KDF to derive chain keys from session key
-    // For sending chain: HMAC-SHA256(session_key, "SENDING_CHAIN" || role)
-    // For receiving chain: HMAC-SHA256(session_key, "RECEIVING_CHAIN" || role)
+    // 🔥 CRUCIAL FIX: Use consistent labels regardless of who is calling
+    // The key insight: we need to ensure that:
+    // - What INITIATOR calls "sending" should match what RESPONDER calls "receiving"
+    // - What INITIATOR calls "receiving" should match what RESPONDER calls "sending"
     
     unsigned int hmac_len;
     
     if (_iAmSessionInitiator) {
-        // Initiator: sending = "INIT_SEND", receiving = "RESP_SEND" 
-        const char* send_label = "INIT_SEND";
-        const char* recv_label = "RESP_SEND";
+        // Initiator: I send with "ALICE_SEND", I receive from "BOB_SEND"
+        const char* my_send_label = "ALICE_SEND";
+        const char* their_send_label = "BOB_SEND";
         
         HMAC(EVP_sha256(), _session_key, _session_key_len,
-             (unsigned char*)send_label, strlen(send_label), 
+             (unsigned char*)my_send_label, strlen(my_send_label), 
              _sending_chain_key, &hmac_len);
              
         HMAC(EVP_sha256(), _session_key, _session_key_len,
-             (unsigned char*)recv_label, strlen(recv_label), 
+             (unsigned char*)their_send_label, strlen(their_send_label), 
              _receiving_chain_key, &hmac_len);
              
-        printf("INITRATCHET DEBUG: INITIATOR - sending=INIT_SEND, receiving=RESP_SEND\n");
+        printf("INITRATCHET DEBUG: INITIATOR - my_sending=ALICE_SEND, my_receiving=BOB_SEND\n");
     } else {
-        // Responder: sending = "RESP_SEND", receiving = "INIT_SEND"
-        const char* send_label = "RESP_SEND";
-        const char* recv_label = "INIT_SEND";
+        // Responder: I send with "BOB_SEND", I receive from "ALICE_SEND"
+        const char* my_send_label = "BOB_SEND";
+        const char* their_send_label = "ALICE_SEND";
         
         HMAC(EVP_sha256(), _session_key, _session_key_len,
-             (unsigned char*)send_label, strlen(send_label), 
+             (unsigned char*)my_send_label, strlen(my_send_label), 
              _sending_chain_key, &hmac_len);
              
         HMAC(EVP_sha256(), _session_key, _session_key_len,
-             (unsigned char*)recv_label, strlen(recv_label), 
+             (unsigned char*)their_send_label, strlen(their_send_label), 
              _receiving_chain_key, &hmac_len);
              
-        printf("INITRATCHET DEBUG: RESPONDER - sending=RESP_SEND, receiving=INIT_SEND\n");
+        printf("INITRATCHET DEBUG: RESPONDER - my_sending=BOB_SEND, my_receiving=ALICE_SEND\n");
     }
     
     printf("HMAC output length: %u\n", hmac_len);
@@ -777,27 +779,6 @@ void SmkexSessionInfo::initializeRatchet() {
     for(int i = 0; i < 32; i++)
         printf("%02X", _receiving_chain_key[i]);
     printf("\n");
-    
-    // Check if there's unwanted data beyond 32 bytes
-    bool has_extra_data = false;
-    for(int i = 32; i < SMKEX_SESSION_KEY_LEN; i++) {
-        if (_sending_chain_key[i] != 0 || _receiving_chain_key[i] != 0) {
-            has_extra_data = true;
-            break;
-        }
-    }
-    if (has_extra_data) {
-        printf("WARNING: Extra data found beyond 32 bytes in chain keys!\n");
-        printf("Sending chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
-        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
-            printf("%02X", _sending_chain_key[i]);
-        printf("\n");
-        
-        printf("Receiving chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
-        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
-            printf("%02X", _receiving_chain_key[i]);
-        printf("\n");
-    }
 #endif
 }
 
@@ -1023,6 +1004,8 @@ bool SmkexSessionInfo::initVerticalRatchet() {
     return true;
 }
 
+// In SmkexSessionInfo.cpp - Fix the shouldPerformVerticalRatchet method
+
 bool SmkexSessionInfo::shouldPerformVerticalRatchet() const {
     unsigned int total_messages = _sending_counter + _receiving_counter;
     
@@ -1032,26 +1015,46 @@ bool SmkexSessionInfo::shouldPerformVerticalRatchet() const {
     
     printf("=== VERTICAL RATCHET AUTO-CHECK ===\n");
     printf("Buddy: %s\n", _buddy.c_str());
+    printf("Role: %s\n", _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
     printf("Sending: %u, Receiving: %u, Total: %u\n", 
            _sending_counter, _receiving_counter, total_messages);
     printf("Interval: %d, Modulo: %u\n", VERTICAL_RATCHET_INTERVAL, total_messages % VERTICAL_RATCHET_INTERVAL);
     printf("Meets count requirement: %s\n", meets_count_requirement ? "YES" : "NO");
     printf("Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
     
-    // 🔥 CRUCIAL FIX: Dacă suntem la multiplu și avem pending, înseamnă că 
-    // cealaltă parte nu a răspuns - să curățăm pending și să reîncercăm
-    if (meets_count_requirement && _pending_vertical_ratchet) {
-        printf("🔧 CLEARING stuck pending vertical ratchet to retry\n");
-        // Cast pentru a putea modifica
-        const_cast<SmkexSessionInfo*>(this)->_pending_vertical_ratchet = false;
+    // 🔥 CRUCIAL FIX: Only the INITIATOR should trigger vertical ratchet automatically
+    // The RESPONDER should only respond to received vertical ratchet messages
+    if (meets_count_requirement && !_pending_vertical_ratchet) {
+        if (_iAmSessionInitiator) {
+            printf("✅ INITIATOR will trigger vertical ratchet\n");
+            printf("Final decision: YES\n");
+            printf("=====================================\n");
+            return true;
+        } else {
+            printf("⏳ RESPONDER waits for INITIATOR to trigger vertical ratchet\n");
+            printf("Final decision: NO (waiting for initiator)\n");
+            printf("=====================================\n");
+            return false;
+        }
     }
     
-    bool should_ratchet = meets_count_requirement && !_pending_vertical_ratchet;
+    // Clear stuck pending state if needed
+    if (meets_count_requirement && _pending_vertical_ratchet) {
+        printf("🔧 CLEARING stuck pending vertical ratchet to retry\n");
+        const_cast<SmkexSessionInfo*>(this)->_pending_vertical_ratchet = false;
+        
+        // Only initiator retries
+        if (_iAmSessionInitiator) {
+            printf("✅ INITIATOR retries vertical ratchet\n");
+            printf("Final decision: YES (retry)\n");
+            printf("=====================================\n");
+            return true;
+        }
+    }
     
-    printf("Final decision: %s\n", should_ratchet ? "YES" : "NO");
+    printf("Final decision: NO\n");
     printf("=====================================\n");
-    
-    return should_ratchet;
+    return false;
 }
 
 bool SmkexSessionInfo::performVerticalRatchet() {
@@ -1164,10 +1167,32 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
     unsigned char old_session_key[SMKEX_SESSION_KEY_LEN];
     memcpy(old_session_key, _session_key, _session_key_len);
     
-    // Combină secretul DH nou cu cheia de sesiune actuală pentru a deriva o nouă cheie de sesiune
+    // 🔥 CRUCIAL FIX: Asigură ordinea DETERMINISTĂ pentru combinare
+    // Folosim buddy names pentru a determina ordinea consistentă
+    
+    std::string alice = _iAmSessionInitiator ? _buddy : getBuddy();  // buddy-ul inițiatorului
+    std::string bob = _iAmSessionInitiator ? getBuddy() : _buddy;    // buddy-ul responder-ului
+    
+    // Sortăm alphabetic pentru ordine deterministă
+    bool alice_first = (alice.compare(bob) < 0);
+    
+    printf("Deterministic ordering: alice='%s', bob='%s', alice_first=%s\n", 
+           alice.c_str(), bob.c_str(), alice_first ? "YES" : "NO");
+    
+    // Combină în ordine deterministă: vechea cheie + noul secret DH
     unsigned char combined_input[SMKEX_SESSION_KEY_LEN + SMKEX_DH_KEY_LEN];
-    memcpy(combined_input, _session_key, _session_key_len);
-    memcpy(combined_input + _session_key_len, new_dh_secret, new_dh_len);
+    
+    if (alice_first) {
+        // Alice data first, then Bob data
+        memcpy(combined_input, _session_key, _session_key_len);
+        memcpy(combined_input + _session_key_len, new_dh_secret, new_dh_len);
+        printf("Using ALICE_FIRST ordering: old_session_key + new_dh_secret\n");
+    } else {
+        // Bob data first, then Alice data  
+        memcpy(combined_input, new_dh_secret, new_dh_len);
+        memcpy(combined_input + new_dh_len, _session_key, _session_key_len);
+        printf("Using BOB_FIRST ordering: new_dh_secret + old_session_key\n");
+    }
     
     // Derivă noua cheie de sesiune
     unsigned char new_session_key[SMKEX_SESSION_KEY_LEN];
@@ -1200,6 +1225,13 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
     unsigned char old_sending_chain[32], old_receiving_chain[32];
     memcpy(old_sending_chain, _sending_chain_key, 32);
     memcpy(old_receiving_chain, _receiving_chain_key, 32);
+    
+    // 🔥 CRUCIAL FIX: Reset counters to 0 after vertical ratchet
+    printf("\n=== RESETTING COUNTERS FOR VERTICAL RATCHET ===\n");
+    printf("OLD counters: Sending=%u, Receiving=%u\n", _sending_counter, _receiving_counter);
+    _sending_counter = 0;
+    _receiving_counter = 0;
+    printf("NEW counters: Sending=%u, Receiving=%u\n", _sending_counter, _receiving_counter);
     
     // Re-inițializează symmetric ratchet cu noua cheie de sesiune
     printf("\n=== REINITIALIZING SYMMETRIC RATCHET ===\n");
@@ -1236,6 +1268,8 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
     printf("██████████████████████████████████████████████████████████\n");
     printf("█          VERTICAL RATCHET COMPLETED SUCCESSFULLY      █\n");
     printf("█                   Counter: %3u                        █\n", _vertical_ratchet_counter);
+    printf("█         Deterministic order: %-24s █\n", alice_first ? "ALICE_FIRST" : "BOB_FIRST");
+    printf("█         Counters reset to: S:0 R:0                   █\n");
     printf("██████████████████████████████████████████████████████████\n");
     printf("\n");
     

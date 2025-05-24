@@ -247,196 +247,154 @@ int main(int argc, char *argv[])
   MpService::instance()->getCallManager()->addCallCb(&callRcv);
 
   char opt;
-  while (true)
-  {
-    print_usage(buddyID);
+      unsigned int last_checked_count = 0;  // Track last message count we checked at
 
-    opt = getchar();
-    switch (opt)
+    while (true)
     {
-    case 'c':
-      /* Call buddy */
-      std::cout << std::endl
-                << "Action: Calling buddy!" << std::endl;
-      MpService::instance()->getCallManager()->callBuddy(buddyID);
-      break;
-    case 'a':
-      /* Answer call */
-      std::cout << std::endl
-                << "Action: Answer call!" << std::endl;
-      MpService::instance()->getCallManager()->answerCall(MP_ANSWER_CALL);
-      break;
-    case 'e':
-    {
-      /* Disconnect call */
-      std::cout << std::endl
-                << "Action: End call!" << std::endl;
+        // ============================================
+        // SINGLE WEBSOCKET CHECK - ONLY AT 5, 10, 15, 20, etc.
+        // ============================================
+        SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+        unsigned int current_count = session.getSendingCounter() + session.getReceivingCounter();
+        
+        // Check if we reached a new multiple of 5 that we haven't checked yet
+        if (current_count > 0 && 
+            current_count % VERTICAL_RATCHET_INTERVAL == 0 && 
+            current_count != last_checked_count) {
+            
+            printf("📡 WebSocket check at %u messages (multiple of %d)\n", 
+                   current_count, VERTICAL_RATCHET_INTERVAL);
+            
+            smkex.checkNewMessages();
+            last_checked_count = current_count;  // Mark this count as checked
+            
+            printf("✅ Single WebSocket check completed\n");
+        }
 
-      // Închide apelul local
-      mp_status_t result = MpService::instance()->getCallManager()->endCall();
-
-      if (result == MP_SUCCESS)
-      {
-        std::cout << "Apel încheiat cu succes." << std::endl;
-      }
-      else
-      {
-        std::cout << "Eroare la încheierea apelului! Forțez închiderea..." << std::endl;
-        // În caz de eroare, forțează închiderea tuturor apelurilor
-        pjsua_call_hangup_all();
-      }
-      break;
-    }
-    case 's':
-{
-    /* Show all session states */
-    std::cout << std::endl << "Action: Show session states!" << std::endl;
-    SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
-    
-    printf("=== SESSION STATES DEBUG ===\n");
-    printf("Current session state: %d\n", session.getState());
-    printf("SmkexState::STATENotConnected: %d\n", SmkexState::STATENotConnected);
-    printf("SmkexState::STATEWaitKey: %d\n", SmkexState::STATEWaitKey);
-    printf("SmkexState::STATEWaitNonce: %d\n", SmkexState::STATEWaitNonce);
-    printf("SmkexState::STATEWaitNonceH: %d\n", SmkexState::STATEWaitNonceH);
-    printf("SmkexState::STATEConnected: %d\n", SmkexState::STATEConnected);
-    printf("============================\n");
-    
-    // Testează și compatibilitatea pentru vertical ratchet
-    bool ready_strict = (session.getState() == SmkexState::STATEConnected);
-    bool ready_relaxed = (session.getState() == SmkexState::STATEConnected) || (session.getState() == 3);
-    
-    printf("Ready for vertical ratchet (strict): %s\n", ready_strict ? "YES" : "NO");
-    printf("Ready for vertical ratchet (relaxed): %s\n", ready_relaxed ? "YES" : "NO");
-    
-    break;
-}
-    case 'm':
-    {
-      /* Send message */
-      std::cout << std::endl
-                << "Action: Send message!" << std::endl;
-      char msg[256] = {0};
-      std::cout << "Enter message: " << std::endl;
-      std::cin.clear();
-      std::cin.ignore();
-      std::cin.getline(msg, sizeof(msg) - 1, '\n');
-
-      // DEBUGGING: Arată starea ÎNAINTE de trimiterea mesajului
-      SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
-      printf("📊 BEFORE sending message:\n");
-      printf("   Sending counter: %u\n", session.getSendingCounter());
-      printf("   Receiving counter: %u\n", session.getReceivingCounter());
-      printf("   Total: %u\n", session.getSendingCounter() + session.getReceivingCounter());
-      printf("   Next vertical ratchet at: %u messages\n",
-             ((session.getSendingCounter() + session.getReceivingCounter()) / VERTICAL_RATCHET_INTERVAL + 1) * VERTICAL_RATCHET_INTERVAL);
-
-      // Resetează starea SIP dacă e necesar
-      try
-      {
-        pjsua_acc_id acc_id = pjsua_acc_get_default();
-        if (acc_id != PJSUA_INVALID_ID)
+        // ============================================
+        // REGULAR MENU
+        // ============================================
+        print_usage(buddyID);
+        opt = getchar();
+        
+        switch (opt)
         {
-          pjsua_acc_info acc_info;
-          if (pjsua_acc_get_info(acc_id, &acc_info) == PJ_SUCCESS)
-          {
-            if (acc_info.status != 200)
-            {
-              std::cout << "Resetez conexiunea SIP înainte de a trimite mesajul..." << std::endl;
-              pjsua_acc_set_registration(acc_id, PJ_FALSE);
-              pj_thread_sleep(100);
-              pjsua_acc_set_registration(acc_id, PJ_TRUE);
-              pj_thread_sleep(300);
+        case 'c':
+            std::cout << std::endl << "Action: Calling buddy!" << std::endl;
+            MpService::instance()->getCallManager()->callBuddy(buddyID);
+            break;
+            
+        case 'a':
+            std::cout << std::endl << "Action: Answer call!" << std::endl;
+            MpService::instance()->getCallManager()->answerCall(MP_ANSWER_CALL);
+            break;
+            
+        case 'e':
+        {
+            std::cout << std::endl << "Action: End call!" << std::endl;
+            mp_status_t result = MpService::instance()->getCallManager()->endCall();
+            if (result == MP_SUCCESS) {
+                std::cout << "✅ Call ended successfully." << std::endl;
+            } else {
+                std::cout << "❌ Error ending call! Forcing termination..." << std::endl;
+                pjsua_call_hangup_all();
             }
-          }
+            break;
         }
-      }
-      catch (...)
-      {
-        std::cout << "Warning: Exception during SIP status check" << std::endl;
-      }
-
-      // Trimite mesajul
-      MpBuffer payload((uint8_t *)msg, strlen(msg));
-      MpMsgPayload message(buddyID, payload, 1, 5, 1, MP_TYPE_MESSAGE, false);
-      MpService::instance()->getAutoResend()->addMessage(message);
-
-      std::cout << std::endl
-                << "✅ Message sent!" << std::endl;
-
-      // DEBUGGING: Arată starea DUPĂ trimiterea mesajului
-      printf("📊 AFTER sending message:\n");
-      printf("   Sending counter: %u\n", session.getSendingCounter());
-      printf("   Receiving counter: %u\n", session.getReceivingCounter());
-      printf("   Total: %u\n", session.getSendingCounter() + session.getReceivingCounter());
-
-      break;
-    }
-
-    case 'r':
-    {
-      /* Show ratchet state */
-      std::cout << std::endl
-                << "Action: Show ratchet state!" << std::endl;
-      SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
-      session.printRatchetState();
-
-      // Also print current session key for comparison
-      unsigned char current_key[SMKEX_SESSION_KEY_LEN];
-      int klen = session.getSessionKey(current_key);
-      if (klen > 0)
-      {
-        std::cout << "Base session key (first 16 bytes): ";
-        for (int i = 0; i < 16 && i < klen; i++)
-          printf("%02X", current_key[i]);
-        std::cout << "..." << std::endl;
-      }
-      break;
-    }
-
-    case 'v':
-    {
-      /* Force vertical ratchet */
-      std::cout << std::endl
-                << "Action: Force vertical ratchet!" << std::endl;
-      SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
-      if (session.getState() == SmkexState::STATEConnected)
-      {
-        if (smkex.checkAndPerformVerticalRatchet(buddyID) == 0)
+        
+        case 's':
         {
-          std::cout << "Vertical ratchet initiated successfully!" << std::endl;
+            std::cout << std::endl << "Action: Show session states!" << std::endl;
+            SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+            
+            printf("=== SESSION STATES DEBUG ===\n");
+            printf("Current session state: %d\n", session.getState());
+            printf("Role: %s\n", session.isInitiator() ? "INITIATOR" : "RESPONDER");
+            printf("Messages: %u (S:%u + R:%u)\n", 
+                   session.getSendingCounter() + session.getReceivingCounter(),
+                   session.getSendingCounter(), session.getReceivingCounter());
+            printf("Vertical pending: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
+            printf("============================\n");
+            break;
         }
-        else
+        
+        case 'm':
         {
-          std::cout << "Failed to initiate vertical ratchet!" << std::endl;
+            std::cout << std::endl << "Action: Send message!" << std::endl;
+            char msg[256] = {0};
+            std::cout << "Enter message: ";
+            std::cin.clear();
+            std::cin.ignore();
+            std::cin.getline(msg, sizeof(msg) - 1, '\n');
+
+            // Show state BEFORE sending
+            printf("📊 BEFORE: S:%u + R:%u = %u\n", 
+                   session.getSendingCounter(), session.getReceivingCounter(),
+                   session.getSendingCounter() + session.getReceivingCounter());
+
+            MpBuffer payload((uint8_t *)msg, strlen(msg));
+            MpMsgPayload message(buddyID, payload, 1, 5, 1, MP_TYPE_MESSAGE, false);
+            MpService::instance()->getAutoResend()->addMessage(message);
+
+            std::cout << "✅ Message sent!" << std::endl;
+            
+            // Show state AFTER sending
+            printf("📊 AFTER: S:%u + R:%u = %u\n", 
+                   session.getSendingCounter(), session.getReceivingCounter(),
+                   session.getSendingCounter() + session.getReceivingCounter());
+            break;
         }
-      }
-      else
-      {
-        std::cout << "Session not connected - cannot perform vertical ratchet!" << std::endl;
-      }
-      break;
+        
+        case 'r':
+        {
+            std::cout << std::endl << "Action: Show ratchet state!" << std::endl;
+            session.printRatchetState();
+            break;
+        }
+        
+        case 'v':
+        {
+            std::cout << std::endl << "Action: Force vertical ratchet!" << std::endl;
+            if (session.getState() == SmkexState::STATEConnected) {
+                if (smkex.checkAndPerformVerticalRatchet(buddyID) == 0) {
+                    std::cout << "✅ Vertical ratchet initiated!" << std::endl;
+                } else {
+                    std::cout << "❌ Failed to initiate vertical ratchet!" << std::endl;
+                }
+            } else {
+                std::cout << "❌ Session not connected!" << std::endl;
+            }
+            break;
+        }
+        
+        case 'p':
+        {
+            std::cout << std::endl << "Action: Clear pending vertical ratchet!" << std::endl;
+            if (session.hasPendingVerticalRatchet()) {
+                session.resetVerticalRatchetCounters();
+                std::cout << "✅ Pending cleared!" << std::endl;
+            } else {
+                std::cout << "ℹ️  No pending to clear" << std::endl;
+            }
+            break;
+        }
+        
+        case 'w':
+        {
+            std::cout << std::endl << "Action: Manual WebSocket check!" << std::endl;
+            smkex.checkNewMessages();
+            std::cout << "✅ Check completed!" << std::endl;
+            break;
+        }
+        
+        case 'd':
+        {
+            std::cout << std::endl << "Action: Debug session info!" << std::endl;
+            session.printSessionInfo();
+            break;
+        }
+        }
     }
 
-    case 'p':
-{
-    /* Clear pending vertical ratchet */
-    std::cout << std::endl << "Action: Clear pending vertical ratchet!" << std::endl;
-    SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
-    
-    if (session.hasPendingVerticalRatchet()) {
-        // Hack pentru a curăța starea pending (pentru debugging)
-        session.resetVerticalRatchetCounters();
-        std::cout << "✅ Pending vertical ratchet cleared!" << std::endl;
-    } else {
-        std::cout << "ℹ️  No pending vertical ratchet to clear" << std::endl;
-    }
-    
-    session.printRatchetState();
-    break;
-}
-    }
-  }
-
-  return 0;
+    return 0;
 }
