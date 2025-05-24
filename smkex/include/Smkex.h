@@ -301,8 +301,6 @@ public:
      * @return true dacă Kyber este activat, false în caz contrar
      */
     inline bool isKyberEnabled() const { return SMKEX_KYBER_ENABLED; }
-
-	int sendRatchetDHKey(SmkexSessionInfo &session, std::string buddy);
 };
 
 int sendKyberCiphertext(SmkexSessionInfo &session, std::string buddy);

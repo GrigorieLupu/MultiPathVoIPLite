@@ -518,83 +518,20 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
     // Store hash before processing (to prevent reentry issues)
     lastProcessedHashes[senderSerial] = currentHash;
     
-    // Get ratcheted key for this message with support for out-of-order and vertical ratchet
+    // Get ratcheted key for this message
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
         printf("BEFORE ratcheting - Receiving counter: %u\n", session.getReceivingCounter());
 
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
-        bool key_obtained = false;
-        
-        // First, try to get a skipped message key for out-of-order messages
-        if (session.isVerticalRatchetInitialized()) {
-            key_obtained = session.trySkippedMessageKey(session.getReceivingCounter(), ratchet_key);
-            if (key_obtained) {
-                printf("Using skipped message key for counter %u\n", session.getReceivingCounter());
-            }
+        if (!session.ratchetReceivingChain(ratchet_key)) {
+            MP_LOG1("Error: Failed to ratchet receiving chain");
+            // Restore the hash since processing failed
+            lastProcessedHashes.erase(senderSerial);
+            return;
         }
-        
-        // If no skipped key found, generate normally
-        if (!key_obtained) {
-            if (!session.ratchetReceivingChain(ratchet_key)) {
-                MP_LOG1("Error: Failed to ratchet receiving chain");
-                // Restore the hash since processing failed
-                lastProcessedHashes.erase(senderSerial);
-                return;
-            }
-        }
-        
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
         MP_LOG2_INT("Using ratcheted key for message from counter: ", session.getReceivingCounter() - 1);
-        
-        // Check if we should trigger vertical ratchet
-        static std::map<std::string, unsigned int> lastVerticalRatchetCounter;
-        
-        if (session.isVerticalRatchetInitialized()) {
-            unsigned int currentReceivingCounter = session.getReceivingCounter();
-            unsigned int lastVerticalCounter = lastVerticalRatchetCounter[senderSerial];
-            
-            // Trigger vertical ratchet if:
-            // 1. We've received VERTICAL_RATCHET_INTERVAL messages since last ratchet, OR
-            // 2. This is the first time we're checking for this sender
-            if ((currentReceivingCounter > 0 && 
-                 currentReceivingCounter % VERTICAL_RATCHET_INTERVAL == 0 && 
-                 currentReceivingCounter != lastVerticalCounter) ||
-                (lastVerticalCounter == 0 && currentReceivingCounter > 10)) {
-                
-                printf("=== TRIGGERING VERTICAL RATCHET ===\n");
-                printf("Current receiving counter: %u\n", currentReceivingCounter);
-                printf("Last vertical ratchet at: %u\n", lastVerticalCounter);
-                
-                // Generate new DH keys for vertical ratchet
-                if (session.generateNewDHRatchetKeys()) {
-                    // Send our new DH public key to peer to trigger their vertical ratchet
-                    unsigned char local_dh_ratchet_key[SMKEX_PUB_KEY_LEN];
-                    int key_length = session.getLocalDHRatchetPubKey(local_dh_ratchet_key);
-                    
-                    if (key_length > 0) {
-                        // Create and send ratchet DH key message
-                        SmkexT4mRecord sr(0, senderSerial, smkex->getClientID2(), 
-                                        SMKEX_T4M_Type::ratchetDHKey,
-                                        SMKEX_T4M_PROTOCOL_VERSION, key_length, 
-                                        local_dh_ratchet_key);
-                        
-                        if (smkex->sendRecord(sr, senderSerial, SMKEX_CHANNEL_1) == 0) {
-                            printf("Sent DH ratchet key to peer (%d bytes)\n", key_length);
-                            lastVerticalRatchetCounter[senderSerial] = currentReceivingCounter;
-                        } else {
-                            printf("Error: Failed to send DH ratchet key to peer\n");
-                        }
-                    } else {
-                        printf("Error: No DH ratchet key available to send\n");
-                    }
-                } else {
-                    printf("Error: Failed to generate new DH ratchet keys\n");
-                }
-                printf("=================================\n");
-            }
-        }
-        
     } else {
         // Fallback to session key if ratchet not initialized
         if (!getOobKey(senderSerial, key, sizeof(key))) {
@@ -617,94 +554,19 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
 
     if (ret != 1) {
         MP_LOG1("Error: Message decryption failed");
-        
-        // If vertical ratchet is enabled, this might be due to out-of-sync counters
-        if (session.isVerticalRatchetInitialized()) {
-            printf("Decryption failed - possibly out-of-sync ratchet state\n");
-            printf("Current receiving counter: %u\n", session.getReceivingCounter());
-            
-            // Try to skip ahead and find the correct key (limited skip to prevent DoS)
-            const unsigned int MAX_SKIP_AHEAD = 10;
-            bool decryption_success = false;
-            unsigned int original_counter = session.getReceivingCounter();
-            
-            for (unsigned int skip = 1; skip <= MAX_SKIP_AHEAD && !decryption_success; skip++) {
-                printf("Trying to skip %u messages ahead...\n", skip);
-                
-                // Generate key for counter + skip
-                unsigned char test_ratchet_key[SMKEX_SESSION_KEY_LEN];
-                
-                // Temporarily advance the counter
-                session.skipMessageKeys(original_counter + skip);
-                
-                if (session.ratchetReceivingChain(test_ratchet_key)) {
-                    char test_key[SESSION_KEY_LENGTH];
-                    memcpy(test_key, test_ratchet_key, SESSION_KEY_LENGTH);
-                    
-                    // Try decryption with this key
-                    uint8_t *testDecMsg = new uint8_t[body->slen];
-                    size_t testDecMsgLen;
-                    
-                    int test_ret = mp_aesgcm_decrypt(
-                        reinterpret_cast<const unsigned char *>(body->ptr + SESSION_IV_LENGTH),
-                        body->slen - SESSION_IV_LENGTH,
-                        reinterpret_cast<const unsigned char *>(test_key),
-                        reinterpret_cast<const unsigned char*>(body->ptr),
-                        testDecMsg, &testDecMsgLen);
-                    
-                    if (test_ret == 1) {
-                        printf("Decryption successful after skipping %u messages\n", skip);
-                        
-                        // Use the successful decryption
-                        delete[] decMsg;
-                        decMsg = testDecMsg;
-                        decMsgLen = testDecMsgLen;
-                        decryption_success = true;
-                        
-                        printf("Ratchet state synchronized after skip\n");
-                    } else {
-                        delete[] testDecMsg;
-                    }
-                }
-                
-                if (decryption_success) break;
-            }
-            
-            if (!decryption_success) {
-                printf("Failed to decrypt after trying %u skip attempts\n", MAX_SKIP_AHEAD);
-                // Restore original counter state
-                // Note: In a real implementation, you might want to request ratchet resync
-            }
-        }
-        
-        if (ret != 1) {
-            // Final failure - restore hash and cleanup
-            lastProcessedHashes.erase(senderSerial);
-            delete[] decMsg;
-            return;
-        }
+        // Restore hash since decryption failed - might be out of sync
+        lastProcessedHashes.erase(senderSerial);
+        delete[] decMsg;
+        return;
     }
 
-    // Log successful decryption
     MP_LOG1("Mesaj decriptat:");
-    printf("%.*s\n", (int)decMsgLen, (char*)decMsg);
+    printf("%s\n", (char*)decMsg);
 
-    // Forward the decrypted message to the application
     MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
             decMsg, decMsgLen);
 
     delete[] decMsg;
-    
-    // Optional: Cleanup old hashes to prevent memory growth
-    static const size_t MAX_HASH_HISTORY = 1000;
-    if (lastProcessedHashes.size() > MAX_HASH_HISTORY) {
-        printf("Cleaning up old message hashes (size: %zu)\n", lastProcessedHashes.size());
-        // Keep only the most recent entries - in a real implementation, 
-        // you might want to use a more sophisticated cleanup strategy
-        auto it = lastProcessedHashes.begin();
-        std::advance(it, lastProcessedHashes.size() / 2);
-        lastProcessedHashes.erase(lastProcessedHashes.begin(), it);
-    }
 }
 
 void MpSIPStack::on_pager_status(pjsua_call_id call_id, const pj_str_t *to,

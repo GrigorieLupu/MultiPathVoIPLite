@@ -22,7 +22,6 @@
 #include "Smkex.h"
 #include "SmkexState.h"
 #include <oqs/kem.h>
-#include <map>
 
 // PQ
 #define SMKEX_KYBER_PUB_KEY_LEN 1184     // Dimensiunea cheii publice Kyber-768
@@ -42,9 +41,6 @@
 #endif
 #define SMKEX_DH_KEY_LEN 256
 #define SMKEX_SESSION_KEY_LEN 64
-
-#define VERTICAL_RATCHET_INTERVAL 5
-
 
 class SmkexSessionInfo
 {
@@ -75,43 +71,6 @@ private:
   unsigned int _sending_counter;
   unsigned int _receiving_counter;
   bool _ratchet_initialized;
-
-  // Vertical ratchet state
-  bool _vertical_ratchet_initialized;
-  unsigned char _root_key[SMKEX_SESSION_KEY_LEN];
-  unsigned char _local_dh_priv_ratchet[SMKEX_PRIV_KEY_LEN];
-  unsigned char _local_dh_pub_ratchet[SMKEX_PUB_KEY_LEN];
-  unsigned char _remote_dh_pub_ratchet[SMKEX_PUB_KEY_LEN];
-  unsigned int _local_dh_priv_ratchet_length;
-  unsigned int _local_dh_pub_ratchet_length;
-  unsigned int _remote_dh_pub_ratchet_length;
-
-  // skip list for out-of-order message handling
-  static const int MAX_SKIP = 1000;
-  std::map<unsigned int, unsigned char[SMKEX_SESSION_KEY_LEN]> _skipped_message_keys;
-  unsigned int _previous_sending_counter;
-
-  /**
-     * @brief Generează o pereche de chei DH (privată/publică)
-     * @param private_key Buffer pentru cheia privată
-     * @param public_key Buffer pentru cheia publică  
-     * @param public_key_length Pointer către lungimea cheii publice (output)
-     * @return 0 dacă generarea a reușit, -1 în caz de eroare
-     */
-    int generateDHKeyPair(unsigned char *private_key, unsigned char *public_key, unsigned int *public_key_length);
-
-    /**
-     * @brief Calculează shared secret-ul DH
-     * @param local_private_key Cheia privată locală
-     * @param remote_public_key Cheia publică remotă
-     * @param remote_key_length Lungimea cheii publice remote
-     * @param shared_secret Buffer pentru shared secret (output)
-     * @return 0 dacă calculul a reușit, -1 în caz de eroare
-     */
-    int computeDHSharedSecret(const unsigned char *local_private_key, 
-                             const unsigned char *remote_public_key,
-                             unsigned int remote_key_length,
-                             unsigned char *shared_secret);
 
 public:
   unsigned char local_priv_key[SMKEX_PRIV_KEY_LEN];
@@ -252,94 +211,20 @@ public:
    * @returns 0 if successful, non-zero otherwise.
    */
 
+
   // Vertical Ratcheting
-  /**
-   * @brief Inițializează vertical ratchet-ul cu cheia root
-   */
-  void initializeVerticalRatchet();
-
-  /**
-   * @brief Verifică și afișează starea detaliată a vertical ratchet-ului
-   */
-  void debugVerticalRatchetState() const;
   
-  /**
-   * @brief Simulează trimiterea unui număr de mesaje pentru a testa ratchet-ul
-   */
-  void testVerticalRatchetTrigger(unsigned int message_count);
-  
-  /**
-   * @brief Verifică dacă cheile s-au schimbat după vertical ratchet
-   */
-  bool verifyRatchetKeyChange(const unsigned char* old_root_key, 
-                             const unsigned char* old_sending_key,
-                             const unsigned char* old_receiving_key);
 
-  /**
-   * @brief Efectuează un pas de vertical ratchet când primim o nouă cheie publică DH
-   * @param new_remote_dh_pub Noua cheie publică DH de la peer
-   * @param length Lungimea cheii publice
-   * @return true dacă operația a reușit
-   */
-  bool performVerticalRatchetStep(const unsigned char *new_remote_dh_pub, unsigned int length);
-
-  /**
-   * @brief Generează o nouă pereche de chei DH pentru vertical ratchet
-   * @return true dacă operația a reușit
-   */
-  bool generateNewDHRatchetKeys();
-
-  /**
-   * @brief Obține cheia publică DH locală pentru ratchet
-   */
-  int getLocalDHRatchetPubKey(unsigned char kbuf[]) const;
-
-  /**
-   * @brief Setează cheia publică DH remotă pentru ratchet
-   */
-    void setRemoteDHRatchetPubKey(const unsigned char *key, unsigned int length);
-
-    /**
-     * @brief Efectuează KDF pentru derivarea noilor chei în vertical ratchet
-     */
-    int performKDF(const unsigned char *root_key, const unsigned char *dh_secret,
-                   unsigned char *new_root_key, unsigned char *new_sending_key,
-                   unsigned char *new_receiving_key);
-    
-    /**
-     * @brief Generează o nouă pereche de chei DH pentru ratchet
-     */
-    int generateNewDHRatchetKeyPair();
-
-  /**
-   * @brief Verifică dacă avem o cheie salvată pentru un anumit counter
-   */
-  bool trySkippedMessageKey(unsigned int counter, unsigned char message_key[SMKEX_SESSION_KEY_LEN]);
-
-  /**
-   * @brief Salvează cheile pentru mesajele sărite (skip)
-   */
-  void skipMessageKeys(unsigned int until_counter);
-
-  /**
-   * @brief Verifică dacă vertical ratchet este inițializat
-   */
-  bool isVerticalRatchetInitialized() const { return _vertical_ratchet_initialized; }
-
-  /**
-   * @brief Resetează vertical ratchet-ul
-   */
-  void resetVerticalRatchet();
 
   int initKeysfromDH(void);
 
   /**
-   * @brief Resetează contoarele ratchet la valorile inițiale
-   *
-   * Această metodă re-derivă cheile de lanț din cheia de sesiune
-   * și resetează contoarele pentru a resincroniza comunicarea.
-   */
-  void resetRatchetCounters();
+     * @brief Resetează contoarele ratchet la valorile inițiale
+     * 
+     * Această metodă re-derivă cheile de lanț din cheia de sesiune
+     * și resetează contoarele pentru a resincroniza comunicarea.
+     */
+    void resetRatchetCounters();
 
   /**
    * Open file <filename>, read public Diffie-Hellman parameters P and G and store them in <pdhm>
