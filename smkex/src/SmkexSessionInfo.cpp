@@ -1117,6 +1117,27 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
         return false;
     }
     
+    // 🔥 FIX: Verifică dacă acest mesaj a fost deja procesat
+    unsigned char msgHash[32];
+    compute_sha256(msgHash, data, dataLen);
+    
+    static std::map<std::string, std::string> lastVerticalRatchetHash;
+    char hashStr[65];
+    for(int i = 0; i < 32; i++) {
+        sprintf(hashStr + i*2, "%02X", msgHash[i]);
+    }
+    std::string currentHash(hashStr, 64);
+    
+    std::string sessionKey = _buddy + "_vertical";
+    if (lastVerticalRatchetHash[sessionKey] == currentHash) {
+        printf("🚫 DUPLICATE VERTICAL RATCHET - Already processed this exact message\n");
+        printf("Buddy: %s, Hash: %.16s...\n", _buddy.c_str(), currentHash.c_str());
+        return true; // Return success pentru a nu bloca fluxul
+    }
+    
+    lastVerticalRatchetHash[sessionKey] = currentHash;
+    printf("✅ NEW VERTICAL RATCHET MESSAGE - Hash: %.16s...\n", currentHash.c_str());
+    
     // Salvează cheia publică primită
     _vertical_remote_pub_key_length = SMKEX_PUB_KEY_LEN;
     memcpy(_vertical_remote_pub_key, data, SMKEX_PUB_KEY_LEN);
@@ -1167,38 +1188,37 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
     unsigned char old_session_key[SMKEX_SESSION_KEY_LEN];
     memcpy(old_session_key, _session_key, _session_key_len);
     
-    // 🔥 CRUCIAL FIX: Asigură ordinea DETERMINISTĂ pentru combinare
-    // Folosim buddy names pentru a determina ordinea consistentă
+    // 🔥 CRUCIAL FIX: Asigură ordinea CONSISTENTLY DETERMINISTĂ
+    printf("\n=== FIXED DETERMINISTIC ORDERING ===\n");
+    printf("Role: %s\n", _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
+    printf("Buddy: %s\n", _buddy.c_str());
     
-    std::string alice = _iAmSessionInitiator ? _buddy : getBuddy();  // buddy-ul inițiatorului
-    std::string bob = _iAmSessionInitiator ? getBuddy() : _buddy;    // buddy-ul responder-ului
+    // 🔥 KEY FIX: Folosește ÎNTOTDEAUNA aceeași ordine, indiferent de rol
+    // Ordinea va fi întotdeauna: old_session_key + new_dh_secret
+    printf("Using CONSISTENT ordering: old_session_key + new_dh_secret\n");
+    printf("- Old session key (%u bytes): %02X%02X%02X%02X...\n", 
+           _session_key_len, old_session_key[0], old_session_key[1], 
+           old_session_key[2], old_session_key[3]);
+    printf("- New DH secret (%d bytes): %02X%02X%02X%02X...\n", 
+           new_dh_len, new_dh_secret[0], new_dh_secret[1], 
+           new_dh_secret[2], new_dh_secret[3]);
     
-    // Sortăm alphabetic pentru ordine deterministă
-    bool alice_first = (alice.compare(bob) < 0);
-    
-    printf("Deterministic ordering: alice='%s', bob='%s', alice_first=%s\n", 
-           alice.c_str(), bob.c_str(), alice_first ? "YES" : "NO");
-    
-    // Combină în ordine deterministă: vechea cheie + noul secret DH
+    // Combină în ordine FIXĂ: vechea cheie + noul secret DH
     unsigned char combined_input[SMKEX_SESSION_KEY_LEN + SMKEX_DH_KEY_LEN];
+    memcpy(combined_input, _session_key, _session_key_len);
+    memcpy(combined_input + _session_key_len, new_dh_secret, new_dh_len);
     
-    if (alice_first) {
-        // Alice data first, then Bob data
-        memcpy(combined_input, _session_key, _session_key_len);
-        memcpy(combined_input + _session_key_len, new_dh_secret, new_dh_len);
-        printf("Using ALICE_FIRST ordering: old_session_key + new_dh_secret\n");
-    } else {
-        // Bob data first, then Alice data  
-        memcpy(combined_input, new_dh_secret, new_dh_len);
-        memcpy(combined_input + new_dh_len, _session_key, _session_key_len);
-        printf("Using BOB_FIRST ordering: new_dh_secret + old_session_key\n");
-    }
+    printf("Combined input total length: %u bytes\n", _session_key_len + new_dh_len);
     
     // Derivă noua cheie de sesiune
     unsigned char new_session_key[SMKEX_SESSION_KEY_LEN];
     unsigned int new_session_key_len;
     nist_800_kdf(combined_input, _session_key_len + new_dh_len, 
                  new_session_key, &new_session_key_len);
+    
+    printf("Derived new session key (%u bytes): %02X%02X%02X%02X...\n",
+           new_session_key_len, new_session_key[0], new_session_key[1],
+           new_session_key[2], new_session_key[3]);
     
     printf("\n=== KEY TRANSFORMATION ===\n");
     printf("OLD session key (first 32 bytes): ");
@@ -1268,7 +1288,7 @@ bool SmkexSessionInfo::processVerticalRatchetMessage(const unsigned char* data, 
     printf("██████████████████████████████████████████████████████████\n");
     printf("█          VERTICAL RATCHET COMPLETED SUCCESSFULLY      █\n");
     printf("█                   Counter: %3u                        █\n", _vertical_ratchet_counter);
-    printf("█         Deterministic order: %-24s █\n", alice_first ? "ALICE_FIRST" : "BOB_FIRST");
+    printf("█         Consistent ordering: old_key + new_dh         █\n");
     printf("█         Counters reset to: S:0 R:0                   █\n");
     printf("██████████████████████████████████████████████████████████\n");
     printf("\n");
