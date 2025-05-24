@@ -301,6 +301,49 @@ public:
      * @return true dacă Kyber este activat, false în caz contrar
      */
     inline bool isKyberEnabled() const { return SMKEX_KYBER_ENABLED; }
+
+	// VERTICAL RATCHETING - New methods
+    /**
+     * @brief Verifică și inițiază vertical ratchet dacă este necesar
+     * @param session Sesiunea pentru care se verifică
+     * @param buddy Buddy-ul cu care comunicăm
+     * @return 0 dacă totul este OK, altfel eroare
+     */
+    int checkAndInitiateVerticalRatchet(SmkexSessionInfo &session, std::string buddy);
+    
+    /**
+     * @brief Trimite mesaj de inițiere vertical ratchet
+     * @param session Sesiunea curentă
+     * @param buddy Destinatarul mesajului
+     * @return 0 dacă reușește, altfel eroare
+     */
+    int sendVerticalRatchetInitiate(SmkexSessionInfo &session, std::string buddy);
+    
+    /**
+     * @brief Trimite răspuns la vertical ratchet
+     * @param session Sesiunea curentă  
+     * @param buddy Destinatarul mesajului
+     * @return 0 dacă reușește, altfel eroare
+     */
+    int sendVerticalRatchetResponse(SmkexSessionInfo &session, std::string buddy);
+    
+    /**
+     * @brief Procesează mesajul de inițiere vertical ratchet
+     * @param session Sesiunea curentă
+     * @param data Datele primite
+     * @param dataLen Lungimea datelor
+     * @return 0 dacă reușește, altfel eroare
+     */
+    int processVerticalRatchetInitiate(SmkexSessionInfo &session, const unsigned char *data, uint32_t dataLen);
+    
+    /**
+     * @brief Procesează răspunsul la vertical ratchet
+     * @param session Sesiunea curentă
+     * @param data Datele primite
+     * @param dataLen Lungimea datelor
+     * @return 0 dacă reușește, altfel eroare
+     */
+    int processVerticalRatchetResponse(SmkexSessionInfo &session, const unsigned char *data, uint32_t dataLen);
 };
 
 int sendKyberCiphertext(SmkexSessionInfo &session, std::string buddy);

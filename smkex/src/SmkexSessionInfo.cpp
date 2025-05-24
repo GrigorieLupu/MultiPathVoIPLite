@@ -94,6 +94,34 @@ SmkexSessionInfo::SmkexSessionInfo(){
 #if DEBUG
     printf("SmkexSessionInfo::Constructor ending here\n");
 #endif
+
+  // VERTICAL RATCHETING - Initialize new members
+    _vertical_ratchet_counter = 0;
+    _last_vertical_ratchet_at_counter = 0;
+    _vertical_ratchet_pending = false;
+    _awaiting_vertical_ratchet_response = false;
+    _stored_keys_count = 0;
+    _current_dh_secret_len = 0;
+    
+    // Initialize stored keys array
+    for(int i = 0; i < MAX_STORED_KEYS; i++) {
+        _stored_dh_keys[i].is_valid = false;
+        _stored_dh_keys[i].counter_from = 0;
+        _stored_dh_keys[i].counter_to = 0;
+        _stored_dh_keys[i].dh_secret_len = 0;
+    }
+    
+    // Initialize temp keys
+    memset(_temp_local_pub_key, 0, SMKEX_PUB_KEY_LEN);
+    memset(_temp_local_priv_key, 0, SMKEX_PRIV_KEY_LEN);
+    _temp_local_pub_key_length = 0;
+    _temp_local_priv_key_length = 0;
+    
+    memset(_current_dh_secret, 0, SMKEX_DH_KEY_LEN);
+    
+    #if DEBUG
+    printf("SmkexSessionInfo::Constructor - Vertical Ratchet initialized\n");
+    #endif
 }
 
 SmkexSessionInfo::~SmkexSessionInfo(){
@@ -575,6 +603,9 @@ int SmkexSessionInfo::computeSessionKey(unsigned char kbuf[])
   if (dklen == 0)
     return 0;
 
+  // Stochează secretul DH curent pentru vertical ratcheting
+  memcpy(_current_dh_secret, dhkey, dklen);
+  _current_dh_secret_len = dklen;
   
   if (_kyber_initialised && _kyber_shared_secret_len > 0) {
     // Combinăm cheile Diffie-Hellman și Kyber pentru a crea o cheie finală hibridă
@@ -752,6 +783,13 @@ void SmkexSessionInfo::initializeRatchet() {
     
     _ratchet_initialized = true;
     
+    // VERTICAL RATCHETING - Reset vertical ratchet info când se re-inițializează ratchet-ul
+    if(_vertical_ratchet_counter == 0) {
+        // Prima inițializare
+        _last_vertical_ratchet_at_counter = 0;
+    }
+    // Altfel păstrează valorile existente pentru vertical ratchet
+    
     LOGMSG("Symmetric ratchet initialized successfully\n");
 
 #if DEBUG
@@ -771,26 +809,9 @@ void SmkexSessionInfo::initializeRatchet() {
         printf("%02X", _receiving_chain_key[i]);
     printf("\n");
     
-    // Check if there's unwanted data beyond 32 bytes
-    bool has_extra_data = false;
-    for(int i = 32; i < SMKEX_SESSION_KEY_LEN; i++) {
-        if (_sending_chain_key[i] != 0 || _receiving_chain_key[i] != 0) {
-            has_extra_data = true;
-            break;
-        }
-    }
-    if (has_extra_data) {
-        printf("WARNING: Extra data found beyond 32 bytes in chain keys!\n");
-        printf("Sending chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
-        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
-            printf("%02X", _sending_chain_key[i]);
-        printf("\n");
-        
-        printf("Receiving chain key (full %d bytes): ", SMKEX_SESSION_KEY_LEN);
-        for(int i = 0; i < SMKEX_SESSION_KEY_LEN; i++)
-            printf("%02X", _receiving_chain_key[i]);
-        printf("\n");
-    }
+    // VERTICAL RATCHETING DEBUG
+    printf("Vertical ratchet counter: %u\n", _vertical_ratchet_counter);
+    printf("Last vertical ratchet at counter: %u\n", _last_vertical_ratchet_at_counter);
 #endif
 }
 
@@ -933,6 +954,387 @@ void SmkexSessionInfo::printRatchetState() const {
         printf("...\n");
     }
     printf("==================\n");
+}
+
+bool SmkexSessionInfo::shouldPerformVerticalRatchet() const {
+    if (!_ratchet_initialized) {
+        return false;
+    }
+    
+    // Verifică dacă am trimis suficiente mesaje pentru un vertical ratchet
+    unsigned int messages_since_last_ratchet = _sending_counter - _last_vertical_ratchet_at_counter;
+    
+    #if DEBUG
+    printf("VERTICAL_RATCHET_CHECK: sending_counter=%u, last_ratchet_at=%u, messages_since=%u\n",
+           _sending_counter, _last_vertical_ratchet_at_counter, messages_since_last_ratchet);
+    #endif
+    
+    return (messages_since_last_ratchet >= VERTICAL_RATCHET_INTERVAL) && !_awaiting_vertical_ratchet_response;
+}
+
+int SmkexSessionInfo::initiateVerticalRatchet() {
+    if (!_dh_initialised) {
+        printf("Error: DH not initialized for vertical ratchet\n");
+        return -1;
+    }
+    
+    printf("=== INITIATING VERTICAL RATCHET ===\n");
+    printf("Current sending counter: %u\n", _sending_counter);
+    printf("Last vertical ratchet at: %u\n", _last_vertical_ratchet_at_counter);
+    
+    // Păstrează cheia DH curentă pentru mesajele out-of-order
+    storePreviousDHKey();
+    
+    // Generează noi chei DH temporare
+    if(DH_generate_key(_dh) != 1) {
+        printf("Error generating new DH keys for vertical ratchet\n");
+        return -1;
+    }
+    
+    BIGNUM *new_pub_key_num, *new_priv_key_num;
+    
+    #if OPENSSL_VERSION_NUMBER < 0x10100000L // OpenSSL 1.0.2
+    new_pub_key_num = _dh->pub_key;
+    new_priv_key_num = _dh->priv_key;
+    #else // OpenSSL 1.1.1
+    DH_get0_key(_dh, (const BIGNUM**) &new_pub_key_num, (const BIGNUM**) &new_priv_key_num);
+    #endif
+    
+    _temp_local_pub_key_length = BN_num_bytes(new_pub_key_num);
+    _temp_local_priv_key_length = BN_num_bytes(new_priv_key_num);
+    
+    if(_temp_local_pub_key_length != SMKEX_PUB_KEY_LEN || 
+       _temp_local_priv_key_length != SMKEX_PRIV_KEY_LEN) {
+        printf("Error: Generated DH key lengths don't match expected lengths\n");
+        return -1;
+    }
+    
+    BN_bn2bin(new_pub_key_num, _temp_local_pub_key);
+    BN_bn2bin(new_priv_key_num, _temp_local_priv_key);
+    
+    // ACTUALIZEAZĂ imediat cheile locale cu cele noi generate
+    memcpy(local_pub_key, _temp_local_pub_key, _temp_local_pub_key_length);
+    memcpy(local_priv_key, _temp_local_priv_key, _temp_local_priv_key_length);
+    local_pub_key_length = _temp_local_pub_key_length;
+    local_priv_key_length = _temp_local_priv_key_length;
+    
+    // Calculează și actualizează IMEDIAT noul DH secret (parțial - cu cheia veche remote)
+    // Aceasta va fi o stare temporară până primim cheia nouă de la partner
+    if(remote_pub_key_length > 0) {
+        BIGNUM *pub_key_buddy = BN_bin2bn(remote_pub_key, remote_pub_key_length, NULL);
+        _current_dh_secret_len = DH_compute_key(_current_dh_secret, pub_key_buddy, _dh);
+        BN_free(pub_key_buddy);
+        
+        printf("Updated current DH secret with new local key (temporary state)\n");
+        printf("New temporary DH secret (first 8 bytes): ");
+        for(int i = 0; i < 8; i++)
+            printf("%02X", _current_dh_secret[i]);
+        printf("...\n");
+    }
+    
+    _awaiting_vertical_ratchet_response = true;
+    _vertical_ratchet_pending = true;
+    
+    printf("Generated new DH keys for vertical ratchet\n");
+    printf("New public key (first 8 bytes): ");
+    for(int i = 0; i < 8; i++)
+        printf("%02X", _temp_local_pub_key[i]);
+    printf("...\n");
+    printf("====================================\n");
+    
+    return 0;
+}
+
+int SmkexSessionInfo::processVerticalRatchetKey(const unsigned char* received_pub_key, unsigned int key_len) {
+    if(key_len != SMKEX_PUB_KEY_LEN) {
+        printf("Error: Received DH key length mismatch in vertical ratchet\n");
+        return -1;
+    }
+    
+    printf("=== PROCESSING VERTICAL RATCHET KEY ===\n");
+    printf("Received public key (first 8 bytes): ");
+    for(int i = 0; i < 8; i++)
+        printf("%02X", received_pub_key[i]);
+    printf("...\n");
+    
+    // Dacă nu suntem inițiatori, generăm și noi noi chei DH
+    if(!_awaiting_vertical_ratchet_response) {
+        printf("Not initiator - generating new DH keys in response\n");
+        
+        // Păstrează cheia DH curentă
+        storePreviousDHKey();
+        
+        // Generează noi chei DH
+        if(DH_generate_key(_dh) != 1) {
+            printf("Error generating new DH keys in response to vertical ratchet\n");
+            return -1;
+        }
+        
+        BIGNUM *new_pub_key_num, *new_priv_key_num;
+        
+        #if OPENSSL_VERSION_NUMBER < 0x10100000L // OpenSSL 1.0.2
+        new_pub_key_num = _dh->pub_key;
+        new_priv_key_num = _dh->priv_key;
+        #else // OpenSSL 1.1.1
+        DH_get0_key(_dh, (const BIGNUM**) &new_pub_key_num, (const BIGNUM**) &new_priv_key_num);
+        #endif
+        
+        _temp_local_pub_key_length = BN_num_bytes(new_pub_key_num);
+        _temp_local_priv_key_length = BN_num_bytes(new_priv_key_num);
+        
+        BN_bn2bin(new_pub_key_num, _temp_local_pub_key);
+        BN_bn2bin(new_priv_key_num, _temp_local_priv_key);
+        
+        printf("Generated response DH keys\n");
+    }
+    
+    // Actualizează cheia publică remotă cu cea primită
+    memcpy(remote_pub_key, received_pub_key, key_len);
+    remote_pub_key_length = key_len;
+    
+    // Finalizează vertical ratchet
+    if(finalizeVerticalRatchet() != 0) {
+        printf("Error finalizing vertical ratchet\n");
+        return -1;
+    }
+    
+    printf("=====================================\n");
+    return 0;
+}
+
+int SmkexSessionInfo::finalizeVerticalRatchet() {
+    printf("=== FINALIZING VERTICAL RATCHET ===\n");
+    
+    // Calculează noul secret DH folosind cheile temporare
+    unsigned char new_dh_secret[SMKEX_DH_KEY_LEN];
+    BIGNUM *pub_key_buddy = BN_bin2bn(remote_pub_key, remote_pub_key_length, NULL);
+    
+    // Folosește cheia privată temporară pentru calculul secretului
+    BIGNUM *temp_priv_bn = BN_bin2bn(_temp_local_priv_key, _temp_local_priv_key_length, NULL);
+    
+    // Creează un DH temporar cu cheia privată nouă
+    DH* temp_dh = DH_new();
+    #if OPENSSL_VERSION_NUMBER < 0x10100000L // OpenSSL 1.0.2
+    const BIGNUM *p, *g;
+    DH_get0_pqg(_dh, &p, NULL, &g);
+    DH_set0_pqg(temp_dh, BN_dup(p), NULL, BN_dup(g));
+    temp_dh->priv_key = temp_priv_bn;
+    temp_dh->pub_key = BN_bin2bn(_temp_local_pub_key, _temp_local_pub_key_length, NULL);
+    #else // OpenSSL 1.1.1
+    const BIGNUM *p, *g;
+    DH_get0_pqg(_dh, &p, NULL, &g);
+    DH_set0_pqg(temp_dh, BN_dup(p), NULL, BN_dup(g));
+    BIGNUM *temp_pub_bn = BN_bin2bn(_temp_local_pub_key, _temp_local_pub_key_length, NULL);
+    DH_set0_key(temp_dh, temp_pub_bn, temp_priv_bn);
+    #endif
+    
+    int dh_secret_len = DH_compute_key(new_dh_secret, pub_key_buddy, temp_dh);
+    
+    BN_free(pub_key_buddy);
+    DH_free(temp_dh);
+    
+    if(dh_secret_len <= 0) {
+        printf("Error computing new DH secret in vertical ratchet\n");
+        return -1;
+    }
+    
+    // Actualizează secretul DH curent
+    memcpy(_current_dh_secret, new_dh_secret, dh_secret_len);
+    _current_dh_secret_len = dh_secret_len;
+    
+    // Actualizează cheile locale cu cele temporare
+    memcpy(local_pub_key, _temp_local_pub_key, _temp_local_pub_key_length);
+    memcpy(local_priv_key, _temp_local_priv_key, _temp_local_priv_key_length);
+    local_pub_key_length = _temp_local_pub_key_length;
+    local_priv_key_length = _temp_local_priv_key_length;
+    
+    // Re-derivă cheia de sesiune folosind noul secret DH + Kyber (dacă există)
+    if (_kyber_initialised && _kyber_shared_secret_len > 0) {
+        // Combinăm noul secret DH cu secretul Kyber existent
+        unsigned char combined_key[SMKEX_DH_KEY_LEN + SMKEX_KYBER_SHARED_SECRET_LEN];
+        memcpy(combined_key, new_dh_secret, dh_secret_len);
+        memcpy(combined_key + dh_secret_len, _kyber_shared_secret, _kyber_shared_secret_len);
+        
+        unsigned int combined_len = dh_secret_len + _kyber_shared_secret_len;
+        nist_800_kdf(combined_key, combined_len, _session_key, &_session_key_len);
+        
+        printf("Re-derived session key using new DH + existing Kyber secret\n");
+    } else {
+        // Folosim doar noul secret DH
+        nist_800_kdf(new_dh_secret, dh_secret_len, _session_key, &_session_key_len);
+        printf("Re-derived session key using new DH secret only\n");
+    }
+    
+    // Re-inițializează symmetric ratchet cu noua cheie de sesiune
+    initializeRatchet();
+    
+    // Actualizează contoarele de vertical ratchet
+    _last_vertical_ratchet_at_counter = _sending_counter;
+    _vertical_ratchet_counter++;
+    _vertical_ratchet_pending = false;
+    _awaiting_vertical_ratchet_response = false;
+    
+    // Curăță cheile temporare
+    memset(_temp_local_pub_key, 0, SMKEX_PUB_KEY_LEN);
+    memset(_temp_local_priv_key, 0, SMKEX_PRIV_KEY_LEN);
+    _temp_local_pub_key_length = 0;
+    _temp_local_priv_key_length = 0;
+    
+    printf("Vertical ratchet completed successfully\n");
+    printf("New session key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++)
+        printf("%02X", _session_key[i]);
+    printf("...\n");
+    printf("Vertical ratchet counter: %u\n", _vertical_ratchet_counter);
+    printf("==================================\n");
+    
+    return 0;
+}
+
+void SmkexSessionInfo::storePreviousDHKey() {
+    if(_current_dh_secret_len == 0) {
+        // Prima dată când păstrăm o cheie - calculează secretul curent
+        if(remote_pub_key_length > 0) {
+            BIGNUM *pub_key_buddy = BN_bin2bn(remote_pub_key, remote_pub_key_length, NULL);
+            _current_dh_secret_len = DH_compute_key(_current_dh_secret, pub_key_buddy, _dh);
+            BN_free(pub_key_buddy);
+        }
+    }
+    
+    if(_current_dh_secret_len == 0) {
+        printf("Warning: No current DH secret to store\n");
+        return;
+    }
+    
+    // Găsește un slot liber sau cel mai vechi
+    int slot_to_use = -1;
+    unsigned int oldest_counter = UINT_MAX;
+    
+    for(int i = 0; i < MAX_STORED_KEYS; i++) {
+        if(!_stored_dh_keys[i].is_valid) {
+            slot_to_use = i;
+            break;
+        }
+        if(_stored_dh_keys[i].counter_from < oldest_counter) {
+            oldest_counter = _stored_dh_keys[i].counter_from;
+            slot_to_use = i;
+        }
+    }
+    
+    if(slot_to_use >= 0) {
+        _stored_dh_keys[slot_to_use].is_valid = true;
+        memcpy(_stored_dh_keys[slot_to_use].dh_secret, _current_dh_secret, _current_dh_secret_len);
+        _stored_dh_keys[slot_to_use].dh_secret_len = _current_dh_secret_len;
+        _stored_dh_keys[slot_to_use].counter_from = _last_vertical_ratchet_at_counter;
+        _stored_dh_keys[slot_to_use].counter_to = _sending_counter - 1;
+        
+        if(slot_to_use >= _stored_keys_count) {
+            _stored_keys_count = slot_to_use + 1;
+        }
+        
+        printf("Stored previous DH key in slot %d (counters %u-%u)\n", 
+               slot_to_use, _stored_dh_keys[slot_to_use].counter_from, 
+               _stored_dh_keys[slot_to_use].counter_to);
+    }
+}
+
+bool SmkexSessionInfo::findDHSecretForCounter(unsigned int counter, unsigned char* dh_secret, unsigned int* secret_len) {
+    // Verifică secretul curent
+    if(counter >= _last_vertical_ratchet_at_counter && _current_dh_secret_len > 0) {
+        memcpy(dh_secret, _current_dh_secret, _current_dh_secret_len);
+        *secret_len = _current_dh_secret_len;
+        printf("Using current DH secret for counter %u\n", counter);
+        return true;
+    }
+    
+    // Caută în cheile stocate
+    for(int i = 0; i < _stored_keys_count; i++) {
+        if(_stored_dh_keys[i].is_valid && 
+           counter >= _stored_dh_keys[i].counter_from && 
+           counter <= _stored_dh_keys[i].counter_to) {
+            memcpy(dh_secret, _stored_dh_keys[i].dh_secret, _stored_dh_keys[i].dh_secret_len);
+            *secret_len = _stored_dh_keys[i].dh_secret_len;
+            printf("Using stored DH secret from slot %d for counter %u (range %u-%u)\n", 
+                   i, counter, _stored_dh_keys[i].counter_from, _stored_dh_keys[i].counter_to);
+            return true;
+        }
+    }
+    
+    printf("Warning: No DH secret found for counter %u\n", counter);
+    return false;
+}
+
+void SmkexSessionInfo::cleanupOldDHKeys() {
+    unsigned int current_counter = _receiving_counter;
+    int cleaned_count = 0;
+    
+    for(int i = 0; i < MAX_STORED_KEYS; i++) {
+        if(_stored_dh_keys[i].is_valid) {
+            // Păstrează cheile pentru ultimele 2 * VERTICAL_RATCHET_INTERVAL mesaje
+            if(_stored_dh_keys[i].counter_to < current_counter - (2 * VERTICAL_RATCHET_INTERVAL)) {
+                _stored_dh_keys[i].is_valid = false;
+                _stored_dh_keys[i].counter_from = 0;
+                _stored_dh_keys[i].counter_to = 0;
+                _stored_dh_keys[i].dh_secret_len = 0;
+                cleaned_count++;
+                
+                printf("Cleaned up old DH key from slot %d\n", i);
+            }
+        }
+    }
+    
+    if(cleaned_count > 0) {
+        printf("Cleaned up %d old DH keys\n", cleaned_count);
+    }
+}
+
+void SmkexSessionInfo::printVerticalRatchetState() const {
+    printf("=== Vertical Ratchet State ===\n");
+    printf("Vertical ratchet counter: %u\n", _vertical_ratchet_counter);
+    printf("Last vertical ratchet at counter: %u\n", _last_vertical_ratchet_at_counter);
+    printf("Pending vertical ratchet: %s\n", _vertical_ratchet_pending ? "YES" : "NO");
+    printf("Awaiting response: %s\n", _awaiting_vertical_ratchet_response ? "YES" : "NO");
+    
+    // Afișează starea corectă în funcție de faza vertical ratchet
+    if(_awaiting_vertical_ratchet_response) {
+        printf("STATUS: Waiting for partner's response to complete vertical ratchet\n");
+        printf("Current DH secret: INTERMEDIATE STATE (using new local + old remote key)\n");
+    } else if(_vertical_ratchet_pending) {
+        printf("STATUS: Processing incoming vertical ratchet request\n");  
+        printf("Current DH secret: INTERMEDIATE STATE\n");
+    } else {
+        printf("STATUS: Vertical ratchet complete - using finalized keys\n");
+        printf("Current DH secret: FINAL STATE\n");
+    }
+    
+    printf("Current DH secret length: %u\n", _current_dh_secret_len);
+    printf("Stored keys count: %u\n", _stored_keys_count);
+    
+    if(_current_dh_secret_len > 0) {
+        printf("Current DH secret (first 8 bytes): ");
+        for(int i = 0; i < 8 && i < (int)_current_dh_secret_len; i++)
+            printf("%02X", _current_dh_secret[i]);
+        printf("...\n");
+    }
+    
+    printf("Stored DH keys:\n");
+    for(int i = 0; i < MAX_STORED_KEYS; i++) {
+        if(_stored_dh_keys[i].is_valid) {
+            printf("  Slot %d: counters %u-%u, secret_len=%u (first 4 bytes: ",
+                   i, _stored_dh_keys[i].counter_from, _stored_dh_keys[i].counter_to,
+                   _stored_dh_keys[i].dh_secret_len);
+            for(int j = 0; j < 4 && j < (int)_stored_dh_keys[i].dh_secret_len; j++)
+                printf("%02X", _stored_dh_keys[i].dh_secret[j]);
+            printf("...)\n");
+        }
+    }
+    
+    unsigned int messages_since_last = _sending_counter - _last_vertical_ratchet_at_counter;
+    printf("Messages since last vertical ratchet: %u / %d\n", 
+           messages_since_last, VERTICAL_RATCHET_INTERVAL);
+    printf("Should perform vertical ratchet: %s\n", 
+           shouldPerformVerticalRatchet() ? "YES" : "NO");
+    printf("=============================\n");
 }
 
 
