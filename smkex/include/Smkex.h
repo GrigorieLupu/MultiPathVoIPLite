@@ -305,6 +305,9 @@ public:
 	int checkAndPerformVerticalRatchet(const std::string &buddy);
 
 	int forceVerticalRatchet(const std::string &buddy);
+    int checkAndPerformVerticalRatchetOnFallback(const std::string& buddy);
+
+
 };
 
 int sendKyberCiphertext(SmkexSessionInfo &session, std::string buddy);

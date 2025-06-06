@@ -83,6 +83,11 @@ SmkexSessionInfo::SmkexSessionInfo(){
     memset(remote_pub_key, 0, SMKEX_PUB_KEY_LEN);
     remote_pub_key_length = 0;
 
+    _last_message_was_sent = false;
+    _role_reversal_detected = false;
+    _last_sending_counter = 0;
+    _last_receiving_counter = 0;
+
     // initialise DH structure 
 #if DEBUG
     printf("Init DH parameters from file\n") ;
@@ -831,6 +836,8 @@ bool SmkexSessionInfo::ratchetSendingChain(unsigned char message_key[SMKEX_SESSI
     // Clear the full buffer and copy new key
     memset(_sending_chain_key, 0, SMKEX_SESSION_KEY_LEN);
     memcpy(_sending_chain_key, new_chain_key, 32);
+
+    updateMessageDirection(true);
     
     _sending_counter++;
     
@@ -893,6 +900,8 @@ bool SmkexSessionInfo::ratchetReceivingChain(unsigned char message_key[SMKEX_SES
     memcpy(_receiving_chain_key, new_chain_key, 32);
     
     _receiving_counter++;
+
+    updateMessageDirection(false);
     
     printf("Message key (first 16 bytes): ");
     for(int i = 0; i < 16; i++)
@@ -922,13 +931,14 @@ void SmkexSessionInfo::printRatchetState() const {
         printf("...\n");
     }
     
-    printf("Vertical Ratchet:\n");
+    printf("Vertical Ratchet (Signal-style):\n");
     printf("  Initialized: %s\n", _vertical_ratchet_initialized ? "YES" : "NO");
     printf("  Counter: %u\n", _vertical_ratchet_counter);
     printf("  Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
     printf("  Total messages: %u\n", _sending_counter + _receiving_counter);
-    printf("  Next vertical ratchet at: %u messages\n", 
-           ((_sending_counter + _receiving_counter) / VERTICAL_RATCHET_INTERVAL + 1) * VERTICAL_RATCHET_INTERVAL);
+    
+    printf("  Last message direction: %s\n", _last_message_was_sent ? "SENT" : "RECEIVED");
+    printf("  Role reversal detected: %s\n", _role_reversal_detected ? "YES" : "NO");
     
     if (_vertical_ratchet_initialized && _vertical_local_pub_key_length > 0) {
         printf("  Current vertical key (first 8 bytes): ");
@@ -1002,59 +1012,6 @@ bool SmkexSessionInfo::initVerticalRatchet() {
     printf("...\n");
     
     return true;
-}
-
-// In SmkexSessionInfo.cpp - Fix the shouldPerformVerticalRatchet method
-
-bool SmkexSessionInfo::shouldPerformVerticalRatchet() const {
-    unsigned int total_messages = _sending_counter + _receiving_counter;
-    
-    // Verificare: dacă am ajuns la multiplu de VERTICAL_RATCHET_INTERVAL
-    bool meets_count_requirement = (total_messages > 0) && 
-                                  (total_messages % VERTICAL_RATCHET_INTERVAL == 0);
-    
-    printf("=== VERTICAL RATCHET AUTO-CHECK ===\n");
-    printf("Buddy: %s\n", _buddy.c_str());
-    printf("Role: %s\n", _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
-    printf("Sending: %u, Receiving: %u, Total: %u\n", 
-           _sending_counter, _receiving_counter, total_messages);
-    printf("Interval: %d, Modulo: %u\n", VERTICAL_RATCHET_INTERVAL, total_messages % VERTICAL_RATCHET_INTERVAL);
-    printf("Meets count requirement: %s\n", meets_count_requirement ? "YES" : "NO");
-    printf("Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
-    
-    // 🔥 CRUCIAL FIX: Only the INITIATOR should trigger vertical ratchet automatically
-    // The RESPONDER should only respond to received vertical ratchet messages
-    if (meets_count_requirement && !_pending_vertical_ratchet) {
-        if (_iAmSessionInitiator) {
-            printf("✅ INITIATOR will trigger vertical ratchet\n");
-            printf("Final decision: YES\n");
-            printf("=====================================\n");
-            return true;
-        } else {
-            printf("⏳ RESPONDER waits for INITIATOR to trigger vertical ratchet\n");
-            printf("Final decision: NO (waiting for initiator)\n");
-            printf("=====================================\n");
-            return false;
-        }
-    }
-    
-    // Clear stuck pending state if needed
-    if (meets_count_requirement && _pending_vertical_ratchet) {
-        printf("🔧 CLEARING stuck pending vertical ratchet to retry\n");
-        const_cast<SmkexSessionInfo*>(this)->_pending_vertical_ratchet = false;
-        
-        // Only initiator retries
-        if (_iAmSessionInitiator) {
-            printf("✅ INITIATOR retries vertical ratchet\n");
-            printf("Final decision: YES (retry)\n");
-            printf("=====================================\n");
-            return true;
-        }
-    }
-    
-    printf("Final decision: NO\n");
-    printf("=====================================\n");
-    return false;
 }
 
 bool SmkexSessionInfo::performVerticalRatchet() {
@@ -1325,3 +1282,159 @@ int SmkexSessionInfo::getVerticalLocalPubKey(unsigned char kbuf[]) const {
 }
 
 
+//Signal Vertical Ratchet
+bool SmkexSessionInfo::shouldPerformVerticalRatchetOnFallback() const {
+    printf("=== SIGNAL-STYLE VERTICAL RATCHET CHECK ===\n");
+    printf("Buddy: %s\n", _buddy.c_str());
+    printf("Role: %s\n", _iAmSessionInitiator ? "INITIATOR" : "RESPONDER");
+    printf("Last message was sent: %s\n", _last_message_was_sent ? "YES" : "NO");
+    printf("Role reversal detected: %s\n", _role_reversal_detected ? "YES" : "NO");
+    printf("Sending: %u, Receiving: %u\n", _sending_counter, _receiving_counter);
+    printf("Pending: %s\n", _pending_vertical_ratchet ? "YES" : "NO");
+    
+    // Signal-style rule: Perform vertical ratchet when we detect role reversal
+    // (other user just sent us a message after we were sending)
+    bool should_ratchet = _role_reversal_detected && !_pending_vertical_ratchet;
+    
+    if (should_ratchet) {
+        printf("✅ SIGNAL-STYLE: Role reversal detected - will perform vertical ratchet\n");
+    } else if (_role_reversal_detected && _pending_vertical_ratchet) {
+        printf("⏳ SIGNAL-STYLE: Role reversal detected but ratchet already pending\n");
+    } else {
+        printf("❌ SIGNAL-STYLE: No role reversal - no vertical ratchet needed\n");
+    }
+    
+    printf("Final decision: %s\n", should_ratchet ? "YES" : "NO");
+    printf("===========================================\n");
+    
+    return should_ratchet;
+}
+
+// New method to update message direction tracking:
+void SmkexSessionInfo::updateMessageDirection(bool isSending) {
+    printf("📍 Updating message direction: %s\n", isSending ? "SENDING" : "RECEIVING");
+    printf("   Previous: last_was_sent=%s\n", _last_message_was_sent ? "YES" : "NO");
+    
+    // Detect role reversal: we were sending, now we're receiving
+    if (_last_message_was_sent && !isSending) {
+        _role_reversal_detected = true;
+        printf("🔄 ROLE REVERSAL DETECTED: Was sending, now receiving!\n");
+    } else {
+        _role_reversal_detected = false;
+    }
+    
+    _last_message_was_sent = isSending;
+    printf("   New: last_was_sent=%s, role_reversal=%s\n", 
+           _last_message_was_sent ? "YES" : "NO",
+           _role_reversal_detected ? "YES" : "NO");
+}
+
+// Method to manually detect role reversal (alternative approach):
+void SmkexSessionInfo::detectRoleReversal() {
+    // Check if receiving counter increased (we got a message)
+    bool received_new_message = (_receiving_counter > _last_receiving_counter);
+    
+    // Check if we were previously sending (sending counter was higher)
+    bool was_sending = (_last_sending_counter > _last_receiving_counter);
+    
+    if (received_new_message && was_sending) {
+        _role_reversal_detected = true;
+        printf("🔄 AUTOMATIC ROLE REVERSAL DETECTED via counters!\n");
+        printf("   Was: S:%u R:%u, Now: S:%u R:%u\n", 
+               _last_sending_counter, _last_receiving_counter,
+               _sending_counter, _receiving_counter);
+    }
+    
+    // Update counters for next check
+    _last_sending_counter = _sending_counter;
+    _last_receiving_counter = _receiving_counter;
+}
+
+bool SmkexSessionInfo::completeVerticalRatchet(const unsigned char* remote_pub_key, uint32_t key_len) {
+    printf("=== COMPLETING VERTICAL RATCHET ===\n");
+    
+    if (!_pending_vertical_ratchet) {
+        printf("❌ No pending vertical ratchet to complete\n");
+        return false;
+    }
+    
+    if (!_vertical_ratchet_initialized) {
+        printf("❌ Vertical ratchet not initialized\n");
+        return false;
+    }
+    
+    // Store the remote public key
+    if (key_len != SMKEX_PUB_KEY_LEN) {
+        printf("❌ Invalid remote public key length: %u (expected: %d)\n", key_len, SMKEX_PUB_KEY_LEN);
+        return false;
+    }
+    
+    memcpy(_vertical_remote_pub_key, remote_pub_key, key_len);
+    _vertical_remote_pub_key_length = key_len;
+    
+    printf("Remote vertical key stored (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _vertical_remote_pub_key[i]);
+    }
+    printf("...\n");
+    
+    // Generate shared secret and derive new session key
+    unsigned char shared_secret[SMKEX_PUB_KEY_LEN];
+    
+    // Convert remote public key to BIGNUM
+    BIGNUM* remote_pub_key_num = BN_bin2bn(_vertical_remote_pub_key, _vertical_remote_pub_key_length, NULL);
+    if (!remote_pub_key_num) {
+        printf("❌ Failed to convert remote public key\n");
+        return false;
+    }
+    
+    // Compute shared secret
+    int shared_len = DH_compute_key(shared_secret, remote_pub_key_num, _vertical_dh);
+    BN_free(remote_pub_key_num);
+    
+    if (shared_len <= 0) {
+        printf("❌ Failed to compute DH shared secret\n");
+        return false;
+    }
+    
+    printf("✅ Computed shared secret (%d bytes)\n", shared_len);
+    printf("Shared secret (first 16 bytes): ");
+    for(int i = 0; i < 16 && i < shared_len; i++) {
+        printf("%02X", shared_secret[i]);
+    }
+    printf("...\n");
+    
+    // Derive new session key from shared secret
+    // This is where you'd implement the key derivation function
+    // For now, just update the chain keys
+    
+    // Reset chain keys using the shared secret
+    unsigned char new_root_key[32];
+    compute_sha256(new_root_key, shared_secret, shared_len);
+    
+    // Derive new sending and receiving chain keys
+    HMAC(EVP_sha256(), new_root_key, 32, (unsigned char*)"SEND", 4, _sending_chain_key, NULL);
+    HMAC(EVP_sha256(), new_root_key, 32, (unsigned char*)"RECV", 4, _receiving_chain_key, NULL);
+    
+    printf("✅ New chain keys derived!\n");
+    printf("New sending chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _sending_chain_key[i]);
+    }
+    printf("...\n");
+    
+    printf("New receiving chain key (first 16 bytes): ");
+    for(int i = 0; i < 16; i++) {
+        printf("%02X", _receiving_chain_key[i]);
+    }
+    printf("...\n");
+    
+    // Clear pending state
+    _pending_vertical_ratchet = false;
+    
+    printf("🎉 VERTICAL RATCHET COMPLETED!\n");
+    printf("🎉 pending_vertical_ratchet = false\n");
+    printf("===================================\n");
+    
+    return true;
+}
