@@ -306,6 +306,7 @@ public:
 
 	int forceVerticalRatchet(const std::string &buddy);
     int checkAndPerformVerticalRatchetOnFallback(const std::string& buddy);
+	  void checkSignalStyleVerticalRatchet(const std::string &buddy);
 
 
 };

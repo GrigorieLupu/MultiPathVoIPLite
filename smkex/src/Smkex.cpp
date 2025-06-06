@@ -673,47 +673,52 @@ switch((int)rec.getType()){
     break;
     
 case verticalRatchetResponse:
-    MP_LOG1("received verticalRatchetResponse\n");
-    
-    printf("\n██████████████████████████████████████████████████████████\n");
-    printf("█         RECEIVED VERTICAL RATCHET RESPONSE             █\n");
-    printf("██████████████████████████████████████████████████████████\n");
-    printf("From buddy: %s\n", buddy.c_str());
-    printf("Session state: %d\n", session.getState());
-    printf("Has pending ratchet: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
-    
-    if (SMKEX_CHANNEL_0 == channel && session.getState() == SmkexState::STATEConnected &&
-        session.hasPendingVerticalRatchet()) {
+    {  // Add braces to create a new scope for variable declarations
+        MP_LOG1("received verticalRatchetResponse\n");
         
-        // Extract the received public key
-        unsigned char received_pub_key[SMKEX_PUB_KEY_LEN];
-        if (rec.getData(NULL) >= SMKEX_PUB_KEY_LEN) {
-            rec.getData(received_pub_key);
+        // 🔥 FIX: Accept both STATEConnected (4) and STATEWaitNonceH (3) if ratchet is initialized
+        bool session_ready = (session.getState() == SmkexState::STATEConnected) || 
+                            (session.getState() == SmkexState::STATEWaitNonceH && session.isRatchetInitialized());
+        
+        if (SMKEX_CHANNEL_0 == channel && session_ready && session.hasPendingVerticalRatchet()) {
             
-            printf("✅ Processing vertical ratchet response\n");
-            printf("Received vertical public key (first 16 bytes): ");
-            for(int i = 0; i < 16; i++) {
-                printf("%02X", received_pub_key[i]);
-            }
-            printf("...\n");
+            printf("\n██████████████████████████████████████████████████████████\n");
+            printf("█         RECEIVED VERTICAL RATCHET RESPONSE             █\n");
+            printf("██████████████████████████████████████████████████████████\n");
+            printf("From buddy: %s\n", buddy.c_str());
+            printf("Session state: %d\n", session.getState());
+            printf("Has pending ratchet: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
             
-            // Complete the vertical ratchet
-            if (session.completeVerticalRatchet(received_pub_key, SMKEX_PUB_KEY_LEN)) {
-                printf("🎉 VERTICAL RATCHET COMPLETED SUCCESSFULLY!\n");
-                printf("🎉 New session keys generated!\n");
-                printf("🎉 pending_vertical_ratchet = false\n");
+            // Extract the received public key
+            unsigned char received_pub_key[SMKEX_PUB_KEY_LEN];
+            if (rec.getData(NULL) >= SMKEX_PUB_KEY_LEN) {
+                rec.getData(received_pub_key);
+                
+                printf("Received response public key (first 16 bytes): ");
+                for(int i = 0; i < 16; i++) {
+                    printf("%02X", received_pub_key[i]);
+                }
+                printf("...\n");
+                
+                // Process the response
+                if (session.processVerticalRatchetMessage(received_pub_key, SMKEX_PUB_KEY_LEN)) {
+                    printf("✅ Vertical ratchet completed successfully\n");
+                } else {
+                    printf("❌ Failed to process vertical ratchet response\n");
+                }
             } else {
-                printf("❌ Failed to complete vertical ratchet\n");
+                printf("❌ Insufficient data in vertical ratchet response\n");
             }
+            
+            printf("██████████████████████████████████████████████████████████\n");
+        } else {
+            printf("❌ Cannot process vertical ratchet response:\n");
+            printf("   Channel: %d (expected: %d)\n", channel, SMKEX_CHANNEL_0);
+            printf("   State: %d (expected: %d or %d with ratchet)\n", 
+                   session.getState(), SmkexState::STATEConnected, SmkexState::STATEWaitNonceH);
+            printf("   Pending: %s (expected: YES)\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
         }
-    } else {
-        printf("❌ Cannot process vertical ratchet response:\n");
-        printf("   Channel: %d (expected: %d)\n", channel, SMKEX_CHANNEL_0);
-        printf("   State: %d (expected: %d)\n", session.getState(), SmkexState::STATEConnected);
-        printf("   Pending: %s (expected: YES)\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
-    }
-    
-    printf("██████████████████████████████████████████████████████████\n");
+    }  // Close the braces
     break;
 
   default:
@@ -919,3 +924,4 @@ int Smkex::checkAndPerformVerticalRatchetOnFallback(const std::string& buddy) {
     
     return result;
 }
+

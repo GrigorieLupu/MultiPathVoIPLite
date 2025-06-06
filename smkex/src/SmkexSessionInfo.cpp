@@ -1429,7 +1429,7 @@ bool SmkexSessionInfo::completeVerticalRatchet(const unsigned char* remote_pub_k
     }
     printf("...\n");
     
-    // Clear pending state
+    // Clear pending stateyy
     _pending_vertical_ratchet = false;
     
     printf("🎉 VERTICAL RATCHET COMPLETED!\n");
