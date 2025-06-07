@@ -15,6 +15,11 @@
 #include "MpUtils.h"
 #include "ISmkexTransportCallback.h"
 #include "ISmkexTransport.h"
+#include <atomic>
+#include <mutex>
+#include <chrono>
+#include <thread>
+
 
 #define BUFFER_SIZE 4096
 
@@ -67,11 +72,16 @@ private:
      */
     int init_rx(int channel, const char *serverIP, int serverPort, const std::string &clientID);
 
+    std::thread _websocket_thread;
+    std::atomic<bool> _should_stop;
+    std::atomic<bool> _thread_running;
+    std::mutex _websocket_mutex;
+    
+    // Thread function
+    void websocketListenerThread();
+
     /* Constructors */
     WebSockets() {}
-
-    /* Destructor */
-    ~WebSockets();
 
   public:
     static WebSockets &getInstance();
@@ -116,6 +126,13 @@ private:
      * @returns zero if all goes well, non-zero otherwise.
      */
     int sendMessageToBuddy(const std::string &buddy, const uint8_t *data, uint32_t dataLen, int channel);
+
+    void startWebSocketListener();
+    void stopWebSocketListener();
+    bool isListenerRunning() const { return _thread_running.load(); }
+    
+    // Update destructor declaration
+    ~WebSockets();
 };
 
 #endif

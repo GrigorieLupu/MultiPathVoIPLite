@@ -72,17 +72,27 @@ private:
   unsigned int _receiving_counter;
   bool _ratchet_initialized;
 
-  //vertical
-      bool _vertical_ratchet_initialized = false;
-    unsigned int _vertical_ratchet_counter = 0;
-    bool _pending_vertical_ratchet = false;
-    
-    // DH keys pentru vertical ratchet
-    DH *_vertical_dh = nullptr;
-    unsigned char _vertical_local_pub_key[SMKEX_PUB_KEY_LEN];
-    unsigned int _vertical_local_pub_key_length = 0;
-    unsigned char _vertical_remote_pub_key[SMKEX_PUB_KEY_LEN];
-    unsigned int _vertical_remote_pub_key_length = 0;
+  // vertical
+  bool _vertical_ratchet_initialized = false;
+  unsigned int _vertical_ratchet_counter = 0;
+  bool _pending_vertical_ratchet = false;
+
+  // DH keys pentru vertical ratchet
+  DH *_vertical_dh = nullptr;
+  unsigned char _vertical_local_pub_key[SMKEX_PUB_KEY_LEN];
+  unsigned int _vertical_local_pub_key_length = 0;
+  unsigned char _vertical_remote_pub_key[SMKEX_PUB_KEY_LEN];
+  unsigned int _vertical_remote_pub_key_length = 0;
+
+  // Signal Vertical
+  bool _last_message_was_sent;
+  bool _role_reversal_detected;
+  unsigned int _last_sending_counter;
+  unsigned int _last_receiving_counter;
+
+      std::string _last_processed_vertical_ratchet_hash;
+    bool _vertical_ratchet_in_progress;
+    unsigned int _expected_vertical_ratchet_counter;
 
 public:
   unsigned char local_priv_key[SMKEX_PRIV_KEY_LEN];
@@ -126,6 +136,10 @@ public:
   {
     return _iAmSessionInitiator;
   }
+
+  public:
+    // ✅ ADD: Deduplication method
+    bool isDuplicateVerticalRatchetMessage(const unsigned char* data, uint32_t dataLen);
 
   inline int getSessionID() const { return _sessionID; }
 
@@ -223,20 +237,22 @@ public:
    * @returns 0 if successful, non-zero otherwise.
    */
 
-
   // Vertical Ratcheting
-  
 
+    // Signal Vertical Ratchet
+  bool shouldPerformVerticalRatchetOnFallback() const;
+  void updateMessageDirection(bool isSending);
+  void detectRoleReversal();
 
   int initKeysfromDH(void);
 
   /**
-     * @brief Resetează contoarele ratchet la valorile inițiale
-     * 
-     * Această metodă re-derivă cheile de lanț din cheia de sesiune
-     * și resetează contoarele pentru a resincroniza comunicarea.
-     */
-    void resetRatchetCounters();
+   * @brief Resetează contoarele ratchet la valorile inițiale
+   *
+   * Această metodă re-derivă cheile de lanț din cheia de sesiune
+   * și resetează contoarele pentru a resincroniza comunicarea.
+   */
+  void resetRatchetCounters();
 
   /**
    * Open file <filename>, read public Diffie-Hellman parameters P and G and store them in <pdhm>
@@ -366,19 +382,17 @@ public:
 
   int getKyberSharedSecret(unsigned char kbuf[]) const;
 
-      bool initVerticalRatchet();
-    bool performVerticalRatchet();
-    bool processVerticalRatchetMessage(const unsigned char* data, uint32_t dataLen);
-    bool shouldPerformVerticalRatchet() const;
-    void resetVerticalRatchetCounters();
-    
-    // Getters
-    bool isVerticalRatchetInitialized() const { return _vertical_ratchet_initialized; }
-    unsigned int getVerticalRatchetCounter() const { return _vertical_ratchet_counter; }
-    bool hasPendingVerticalRatchet() const { return _pending_vertical_ratchet; }
-    int getVerticalLocalPubKey(unsigned char kbuf[]) const;
+  bool initVerticalRatchet();
+  bool performVerticalRatchet();
+  bool processVerticalRatchetMessage(const unsigned char *data, uint32_t dataLen);
+  void resetVerticalRatchetCounters();
+      bool completeVerticalRatchet(const unsigned char* remote_pub_key, uint32_t key_len);
 
-    
 
+  // Getters
+  bool isVerticalRatchetInitialized() const { return _vertical_ratchet_initialized; }
+  unsigned int getVerticalRatchetCounter() const { return _vertical_ratchet_counter; }
+  bool hasPendingVerticalRatchet() const { return _pending_vertical_ratchet; }
+  int getVerticalLocalPubKey(unsigned char kbuf[]) const;
 };
 #endif
