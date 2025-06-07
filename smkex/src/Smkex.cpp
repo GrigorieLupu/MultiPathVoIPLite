@@ -615,12 +615,32 @@ switch((int)rec.getType()){
     printf("From buddy: %s\n", buddy.c_str());
     printf("My role: %s\n", session.isInitiator() ? "INITIATOR" : "RESPONDER");
     
-    // ✅ FIX: Accept both STATEConnected (4) and STATEWaitNonceH (3)
+    // ✅ FIX: Verifică starea înainte de procesare
     if (SMKEX_CHANNEL_0 == channel && 
         (session.getState() == SmkexState::STATEConnected || 
          session.getState() == SmkexState::STATEWaitNonceH)) {
         
         printf("✅ Session state accepted: %d\n", session.getState());
+        
+        // ✅ FIX: Verifică dacă avem deja un vertical ratchet în progress
+        if (session.hasPendingVerticalRatchet()) {
+            printf("⚠️  WARNING: Already have pending vertical ratchet\n");
+            printf("⚠️  This might be a legitimate second initiate or duplicate\n");
+            
+            // Verifică dacă e același mesaj sau diferit
+            unsigned char current_data[SMKEX_PUB_KEY_LEN];
+            if (rec.getData(NULL) >= SMKEX_PUB_KEY_LEN) {
+                rec.getData(current_data);
+                
+                unsigned char stored_key[SMKEX_PUB_KEY_LEN];
+                if (session.getVerticalLocalPubKey(stored_key) > 0) {
+                    if (memcmp(current_data, stored_key, SMKEX_PUB_KEY_LEN) == 0) {
+                        printf("🚫 DUPLICATE: Same vertical key as ours, ignoring\n");
+                        break;
+                    }
+                }
+            }
+        }
         
         // Extract the received public key
         unsigned char received_pub_key[SMKEX_PUB_KEY_LEN];
@@ -637,7 +657,7 @@ switch((int)rec.getType()){
             if (session.processVerticalRatchetMessage(received_pub_key, SMKEX_PUB_KEY_LEN)) {
                 printf("✅ Vertical ratchet initiate processed successfully\n");
                 
-                // Send response with our public key
+                // ✅ FIX: Doar trimite răspuns dacă nu e duplicate
                 if (session.isVerticalRatchetInitialized()) {
                     unsigned char our_vertical_key[SMKEX_PUB_KEY_LEN];
                     if (session.getVerticalLocalPubKey(our_vertical_key) > 0) {
@@ -650,26 +670,11 @@ switch((int)rec.getType()){
                         sendRecord(response_rec, buddy, SMKEX_CHANNEL_0);
                         
                         printf("✅ Vertical ratchet response sent!\n");
-                    } else {
-                        printf("❌ Failed to get our vertical public key\n");
                     }
-                } else {
-                    printf("❌ Vertical ratchet not initialized\n");
                 }
-            } else {
-                printf("❌ Failed to process vertical ratchet initiate message\n");
             }
-        } else {
-            printf("❌ Insufficient data in vertical ratchet initiate message\n");
         }
-    } else {
-        printf("❌ Cannot process vertical ratchet initiate:\n");
-        printf("   Channel: %d (expected: %d)\n", channel, SMKEX_CHANNEL_0);
-        printf("   State: %d (expected: %d or %d)\n", session.getState(), 
-               SmkexState::STATEConnected, SmkexState::STATEWaitNonceH);
     }
-    
-    printf("██████████████████████████████████████████████████████████\n");
     break;
     
 case verticalRatchetResponse:
@@ -682,7 +687,16 @@ case verticalRatchetResponse:
     printf("Session state: %d\n", session.getState());
     printf("Has pending ratchet: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
     
-    if (SMKEX_CHANNEL_0 == channel && session.getState() == SmkexState::STATEConnected &&
+    // ✅ CRITICAL: Check for duplicate messages
+    if (session.isDuplicateVerticalRatchetMessage(msg, msgLen)) {
+        printf("⚠️  DUPLICATE vertical ratchet response - ignoring to prevent desync\n");
+        printf("██████████████████████████████████████████████████████████\n");
+        break;
+    }
+    
+    if (SMKEX_CHANNEL_0 == channel && 
+        (session.getState() == SmkexState::STATEConnected || 
+         session.getState() == SmkexState::STATEWaitNonceH) &&
         session.hasPendingVerticalRatchet()) {
         
         // Extract the received public key
@@ -691,29 +705,28 @@ case verticalRatchetResponse:
             rec.getData(received_pub_key);
             
             printf("✅ Processing vertical ratchet response\n");
-            printf("Received vertical public key (first 16 bytes): ");
-            for(int i = 0; i < 16; i++) {
-                printf("%02X", received_pub_key[i]);
-            }
-            printf("...\n");
             
-            // Complete the vertical ratchet
             if (session.completeVerticalRatchet(received_pub_key, SMKEX_PUB_KEY_LEN)) {
+                printf("===================================\n");
                 printf("🎉 VERTICAL RATCHET COMPLETED SUCCESSFULLY!\n");
                 printf("🎉 New session keys generated!\n");
-                printf("🎉 pending_vertical_ratchet = false\n");
+                printf("🎉 pending_vertical_ratchet = %s\n", session.hasPendingVerticalRatchet() ? "true" : "false");
+                printf("██████████████████████████████████████████████████████████\n");
             } else {
                 printf("❌ Failed to complete vertical ratchet\n");
+                printf("██████████████████████████████████████████████████████████\n");
             }
+        } else {
+            printf("❌ Invalid vertical ratchet response data length\n");
+            printf("██████████████████████████████████████████████████████████\n");
         }
     } else {
         printf("❌ Cannot process vertical ratchet response:\n");
         printf("   Channel: %d (expected: %d)\n", channel, SMKEX_CHANNEL_0);
-        printf("   State: %d (expected: %d)\n", session.getState(), SmkexState::STATEConnected);
-        printf("   Pending: %s (expected: YES)\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
+        printf("   State: %d\n", session.getState());
+        printf("   Pending: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
+        printf("██████████████████████████████████████████████████████████\n");
     }
-    
-    printf("██████████████████████████████████████████████████████████\n");
     break;
 
   default:

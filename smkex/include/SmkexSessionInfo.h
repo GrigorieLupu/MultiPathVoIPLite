@@ -90,6 +90,10 @@ private:
   unsigned int _last_sending_counter;
   unsigned int _last_receiving_counter;
 
+      std::string _last_processed_vertical_ratchet_hash;
+    bool _vertical_ratchet_in_progress;
+    unsigned int _expected_vertical_ratchet_counter;
+
 public:
   unsigned char local_priv_key[SMKEX_PRIV_KEY_LEN];
   unsigned int local_priv_key_length;
@@ -132,6 +136,10 @@ public:
   {
     return _iAmSessionInitiator;
   }
+
+  public:
+    // ✅ ADD: Deduplication method
+    bool isDuplicateVerticalRatchetMessage(const unsigned char* data, uint32_t dataLen);
 
   inline int getSessionID() const { return _sessionID; }
 
