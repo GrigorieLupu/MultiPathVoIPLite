@@ -528,42 +528,22 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
         MP_LOG2_INT("Using ratcheted key for message from counter: ", session.getReceivingCounter() - 1);
         
-        // 🔄 SIGNAL-STYLE VERTICAL RATCHET CHECK: Check for role reversal after receiving message
-        printf("🔄 CHECKING for SIGNAL-STYLE vertical ratchet after message reception...\n");
+        // 🔥 CRUCIAL FIX: Verifică vertical ratchet DUPĂ receiving counter update
+        printf("🔍 CHECKING for vertical ratchet AFTER receiving counter update...\n");
         printf("📊 Current state: Sending=%u, Receiving=%u, Total=%u\n", 
                session.getSendingCounter(), session.getReceivingCounter(), 
                session.getSendingCounter() + session.getReceivingCounter());
         
-        // Signal-style: Check if we should perform vertical ratchet due to role reversal
-        if (session.shouldPerformVerticalRatchetOnFallback()) {
-            printf("🔄🚨 SIGNAL-STYLE ROLE REVERSAL DETECTED! Triggering vertical ratchet...\n");
-            printf("🔄 This means: We were sending, now we're receiving (conversation direction changed)\n");
-            
-            if (smkex->checkAndPerformVerticalRatchetOnFallback(senderSerial) == 0) {
-                printf("✅ Signal-style vertical ratchet initiated successfully\n");
-            } else {
-                printf("❌ Signal-style vertical ratchet failed on receive side\n");
-                MP_LOG1("Warning: Signal-style vertical ratchet failed on receive side");
+        // Verifică dacă trebuie să facă vertical ratchet
+        if (session.shouldPerformVerticalRatchet()) {
+            printf("🚨 RECEIVING SIDE TRIGGERS VERTICAL RATCHET!\n");
+            if (smkex->checkAndPerformVerticalRatchet(senderSerial) < 0) {
+                MP_LOG1("Warning: Vertical ratchet failed on receive side");
             }
         } else {
-            printf("ℹ️  No role reversal detected - no Signal-style vertical ratchet needed\n");
-            printf("ℹ️  (Either we're continuing to receive, or no pattern change detected)\n");
+            printf("ℹ️  No vertical ratchet needed on receive side\n");
         }
-        
-        // Optional: Also keep the old interval-based check as fallback
-        // Uncomment the following lines if you want to maintain both approaches:
-        /*
-        printf("🔍 Also checking OLD interval-based vertical ratchet...\n");
-        if (session.shouldPerformVerticalRatchet()) {
-            printf("🚨 OLD INTERVAL-BASED VERTICAL RATCHET TRIGGERED!\n");
-            if (smkex->checkAndPerformVerticalRatchet(senderSerial) < 0) {
-                MP_LOG1("Warning: Interval-based vertical ratchet failed on receive side");
-            }
-        }
-        */
-        
     } else {
-        // No ratchet initialized - use OOB key
         if (!getOobKey(senderSerial, key, sizeof(key))) {
             MP_LOG1("Error: No key available for decryption");
             lastProcessedHashes.erase(senderSerial);
@@ -591,14 +571,6 @@ void MpSIPStack::on_pager(pjsua_call_id call_id, const pj_str_t *from,
 
     MP_LOG1("Mesaj decriptat:");
     printf("%s\n", (char*)decMsg);
-
-    // 🔄 DEBUG: Print role reversal tracking state after message processing
-    printf("🔄 === SIGNAL-STYLE RATCHET STATE AFTER MESSAGE ===\n");
-    printf("🔄 Sender: %s\n", senderSerial.c_str());
-    printf("🔄 Message processed successfully\n");
-    printf("🔄 Final counters: S:%u R:%u\n", 
-           session.getSendingCounter(), session.getReceivingCounter());
-    printf("🔄 ===============================================\n");
 
     MpService::instance()->getDataMsg()->onMsgReceived(fromUri.c_str(),
             decMsg, decMsgLen);
@@ -702,11 +674,9 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
     // Get session for the receiver
     SmkexSessionInfo& session = smkex->getSessionInfo(serial);
     
-    /* Get key and ratchet the sending chain */
+    /* Get key BEFORE checking vertical ratchet (important!) */
     char key[SESSION_KEY_LENGTH] = { 0 };
     if (session.isRatchetInitialized()) {
-        printf("🔍 BEFORE ratcheting - Sending counter: %u\n", session.getSendingCounter());
-        
         unsigned char ratchet_key[SMKEX_SESSION_KEY_LEN];
         if (!session.ratchetSendingChain(ratchet_key)) {
             MP_LOG1("Error: Failed to ratchet sending chain");
@@ -714,12 +684,6 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
         }
         memcpy(key, ratchet_key, SESSION_KEY_LENGTH);
         MP_LOG2_INT("Using ratcheted key for message with counter: ", session.getSendingCounter() - 1);
-        
-        printf("🔍 AFTER ratcheting - Sending counter: %u\n", session.getSendingCounter());
-        printf("📊 Current state: Sending=%u, Receiving=%u, Total=%u\n", 
-               session.getSendingCounter(), session.getReceivingCounter(), 
-               session.getSendingCounter() + session.getReceivingCounter());
-               
     } else {
         if (!getOobKey(serial, key, sizeof(key))) {
             MP_LOG1("Error: No key available for encryption");
@@ -728,14 +692,11 @@ mp_status_t MpSIPStack::sendMsg(const char* serial, const uint8_t* msg,
         MP_LOG1("Warning: Using session key (ratchet not initialized)");
     }
 
-    // ❌ REMOVED: Vertical ratchet check - no longer needed here!
-    /*
     // DUPĂ ce am incrementat counterul, verificăm vertical ratchet
     printf("🔍 CHECKING for vertical ratchet AFTER sending counter update...\n");
     if (smkex->checkAndPerformVerticalRatchet(serial) < 0) {
         MP_LOG1("Warning: Vertical ratchet failed, continuing with current keys");
     }
-    */
 
     /* Encrypt the message */
     size_t encMsgLen;

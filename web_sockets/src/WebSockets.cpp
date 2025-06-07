@@ -64,125 +64,49 @@ int WebSockets::init_rx(int channel, const char *serverIP, int serverPort, const
 void WebSockets::init(const std::string serverIP[], int serverPort[], const std::string clientID[],
                       int nrChannels)
 {
-    struct lws_context_creation_info info_rx;
+  struct lws_context_creation_info info_rx;
 
-    LOGMSG("Initialising WebSockets class\n");
+  LOGMSG("Initialising WebSockets class\n");
 
-    ISmkexTransport::init(serverIP, serverPort, clientID, nrChannels);
+  ISmkexTransport::init(serverIP, serverPort, clientID, nrChannels);
 
-    // ✅ NEW: Initialize threading variables
-    _should_stop.store(false);
-    _thread_running.store(false);
+  // Initialise WS RX Context
+	memset(&info_rx, 0, sizeof info_rx);
+	info_rx.port = CONTEXT_PORT_NO_LISTEN;
+	info_rx.protocols = protocols_rx;
+	info_rx.timeout_secs = 60;
+	info_rx.connect_timeout_secs = 60;
+	/*
+	 * since we know this lws context is only ever going to be used with
+	 * NR_CONNECTIONS client wsis / fds / sockets at a time, let lws know it doesn't
+	 * have to use the default allocations for fd tables up to ulimit -n.
+	 * It will just allocate for 1 internal and NR_CONNECTIONS + 1 (allowing for h2
+	 * network wsi) that we will use.
+	 */
+	info_rx.fd_limit_per_thread = 1 + NR_CONNECTIONS + 1;
+	n_rx = 0;
+	context_rx = lws_create_context(&info_rx);
+	if (!context_rx)
+		LOGMSG("Error creating lws context for receive stream\n");
 
-    // Initialise WS RX Context
-    memset(&info_rx, 0, sizeof info_rx);
-    info_rx.port = CONTEXT_PORT_NO_LISTEN;
-    info_rx.protocols = protocols_rx;
-    info_rx.timeout_secs = 60;
-    info_rx.connect_timeout_secs = 60;
-    info_rx.fd_limit_per_thread = 1 + NR_CONNECTIONS + 1;
-    n_rx = 0;
-    context_rx = lws_create_context(&info_rx);
-    if (!context_rx)
-        LOGMSG("Error creating lws context for receive stream\n");
-
-    // Initialise WS RX connection for each WS server
-    for(int k = 0; k < _numberOfChannels; k++)
-    {
+  // Initialise WS RX connection for each WS server
+  for(int k = 0; k < _numberOfChannels; k++)
+  {
 #if DEBUG
-        printf("About to initialise WS RX connection %d\n", k);
+    printf("About to initialise WS RX connection %d\n", k);
 #endif
-        if(init_rx(k, _serverIP[k].c_str(), _serverPort[k], _clientID[k]))
-            LOGMSG("Error initiating WS RX connection\n");
-    }
-
-    // ✅ NEW: Start WebSocket listener thread
-    startWebSocketListener();
+    if(init_rx(k, _serverIP[k].c_str(), _serverPort[k], _clientID[k]))
+      LOGMSG("Error initiating WS RX connection\n");
+  }
 
 #if DEBUG
-    printf("WebSocket constructor done with background listener started\n");
+  printf("WebSocket constructor done\n");
 #endif
-}
-
-void WebSockets::startWebSocketListener() {
-    if (_thread_running.load()) {
-        printf("⚠️  WebSocket listener already running\n");
-        return;
-    }
-    
-    printf("🚀 Starting WebSocket listener thread...\n");
-    _should_stop.store(false);
-    
-    _websocket_thread = std::thread(&WebSockets::websocketListenerThread, this);
-    
-    // Wait a bit for thread to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    printf("✅ WebSocket listener thread started successfully\n");
-}
-
-void WebSockets::stopWebSocketListener() {
-    if (!_thread_running.load()) {
-        printf("ℹ️  WebSocket listener not running\n");
-        return;
-    }
-    
-    printf("🛑 Stopping WebSocket listener thread...\n");
-    _should_stop.store(true);
-    
-    if (_websocket_thread.joinable()) {
-        _websocket_thread.join();
-    }
-    
-    printf("✅ WebSocket listener thread stopped\n");
-}
-
-void WebSockets::websocketListenerThread() {
-    printf("🎯 WebSocket listener thread STARTED - listening continuously!\n");
-    _thread_running.store(true);
-    
-    int loop_count = 0;
-    
-    while (!_should_stop.load()) {
-        {
-            // Lock for thread safety
-            std::lock_guard<std::mutex> lock(_websocket_mutex);
-            
-            // Check for new messages
-            if (n_rx >= 0 && context_rx) {
-                n_rx = lws_service(context_rx, 0);
-                
-#if DEBUG
-                if (loop_count % 1000 == 0) {  // Print every 1000 loops to avoid spam
-                    printf("📡 WebSocket listener: loop %d, n_rx=%d\n", loop_count, n_rx);
-                }
-#endif
-            }
-        }
-        
-        // Small delay to prevent 100% CPU usage
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        loop_count++;
-    }
-    
-    _thread_running.store(false);
-    printf("🛑 WebSocket listener thread STOPPED\n");
 }
 
 WebSockets::~WebSockets()
 {
-    printf("🔧 WebSockets destructor called\n");
-    
-    // Stop the listener thread first
-    stopWebSocketListener();
-    
-    // Clean up WebSocket context
-    if (context_rx) {
-        lws_context_destroy(context_rx);
-        context_rx = nullptr;
-    }
-    
-    printf("✅ WebSockets destructor completed\n");
+	lws_context_destroy(context_rx);
 }
 
 int WebSockets::callback_ws(struct lws * wsi, enum lws_callback_reasons reason,
@@ -286,59 +210,32 @@ int WebSockets::callback_ws_rx(struct lws * wsi, enum lws_callback_reasons reaso
     }
 
 	case LWS_CALLBACK_CLIENT_RECEIVE:
-{
-    LOGMSG("Received data in WS callback\n");
-#if DEBUG
-    printf("In LWS_CALLBACK_CLIENT_RECEIVE for channel %d\n", channel);
-#endif
-
-    string rstr((const char * ) in);
-    cout << "Received encoded data with len " << rstr.length() << ": " << rstr  << endl;
-
-    // ✅ ADD THIS DEBUG:
-    printf("\n🔍🔍🔍 WEBSOCKET RECEPTION DEBUG 🔍🔍🔍\n");
-    printf("Channel: %d\n", channel);
-    printf("Raw data length: %zu\n", rstr.length());
-    printf("Raw data (first 100 chars): %.100s\n", rstr.c_str());
-
-    // Decode data from base64 (expected)
-    string sdata = base64_decode(rstr);
-    
-    // ✅ ADD THIS DEBUG:
-    printf("Decoded data length: %zu\n", sdata.length());
-    printf("Decoded data (first 50 bytes hex): ");
-    for(size_t i = 0; i < std::min(sdata.length(), (size_t)50); i++) {
-        printf("%02X", (unsigned char)sdata[i]);
-    }
-    printf("\n");
-
-    // Create record (if possible) from received data
-    SmkexT4mRecord rec(sdata.c_str(), sdata.length());
-    
-    // ✅ ADD THIS DEBUG:
-    printf("Record type: %d\n", rec.getType());
-    printf("Record source: %s\n", rec.getSrc().c_str());
-    printf("Record dest: %s\n", rec.getDest().c_str());
-    printf("Record data length: %u\n", rec.getData(NULL));
-    
-    cout << "After creating record" << endl;
-    if (rec.getType() != SMKEX_T4M_Type::empty)
     {
-        printf("✅ VALID RECORD - Processing message...\n");
+      LOGMSG("Received data in WS callback\n");
+#if DEBUG
+      printf("In LWS_CALLBACK_CLIENT_RECEIVE for channel %d\n", channel);
+#endif
+    
+      string rstr((const char * ) in);
+      cout << "Received encoded data with len " << rstr.length() << ": " << rstr  << endl;
+
+      // Decode data from base64 (expected)
+      string sdata = base64_decode(rstr);
+
+      // Create record (if possible) from received data
+      SmkexT4mRecord rec(sdata.c_str(), sdata.length());
+      cout << "After creating record" << endl;
+      if (rec.getType() != SMKEX_T4M_Type::empty)
+      {
         // Notify registered callbacks
         WebSockets::getInstance().processMessage(rec.getSrc(), (const uint8_t*)sdata.c_str(),
                                                   sdata.length(), channel);
-        printf("✅ Message processed!\n");
-    }
-    else {
-        printf("❌ EMPTY RECORD - Message not processed!\n");
+      }
+      else
         LOGMSG("Empty record in LWS_CALLBACK_CLIENT_RECEIVE");
-    }
-    
-    printf("🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍🔍\n\n");
 
-    break;
-}
+      break;
+    }
 
 	case LWS_CALLBACK_CLIENT_CLOSED:
     {
@@ -361,25 +258,20 @@ int WebSockets::callback_ws_rx(struct lws * wsi, enum lws_callback_reasons reaso
 // https://github.com/warmcat/libwebsockets/blob/main/plugins/protocol_lws_mirror.c
 int WebSockets::updateMessagesFromServer()
 {
-    // This method is now mostly handled by the background thread
-    // But we can still call it manually if needed
-    
-    std::lock_guard<std::mutex> lock(_websocket_mutex);
-    
-    LOGMSG("In updateMessagesFromServer\n");
+  LOGMSG("In updateMessagesFromServer\n");
 
-    // Check WS connection
-    if (n_rx >= 0 && context_rx)
-    {
-        n_rx = lws_service(context_rx, 0);
+  // Check WS connection
+	if (n_rx >= 0)
+  {
+		n_rx = lws_service(context_rx, 0);
 #if DEBUG
-        printf("Manual WS check: received n=%d\n", n_rx);
+    printf("For RX connection received n=%d\n", n_rx);
 #endif
-    }
+  }
 
-    LOGMSG("Returning from updateMessagesFromServer\n");
+  LOGMSG("Returning from updateMessagesFromServer\n");
 
-    return 0;
+	return 0;
 }
 
 // TODO: add some mechanism to avoid sending a new message before the previous one

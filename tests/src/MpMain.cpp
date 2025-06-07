@@ -62,24 +62,21 @@ namespace MpMainMenuPrinter
 }
 
 void print_usage(const std::string &buddy) {
-    std::cout << std::endl << "++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
-    std::cout << "Buddy: " << buddy << std::endl;
-    std::cout << "c - Call buddy " << buddy << std::endl;
-    std::cout << "a - Answer call with " << buddy << std::endl;
-    std::cout << "e - End call with " << buddy << std::endl;
-    std::cout << "m - Send message to buddy " << buddy << std::endl;
-    std::cout << "r - Show ratchet state" << std::endl;
-    std::cout << "v - Force Signal-style vertical ratchet" << std::endl;
-    std::cout << "p - Clear pending vertical ratchet" << std::endl;
-    std::cout << "s - Show session states" << std::endl;
-    std::cout << "w - Manual WebSocket check" << std::endl;
-    std::cout << "z - Restart WebSocket listener" << std::endl;  // ✅ NEW
-    std::cout << "d - Debug session info" << std::endl;
-    std::cout << "++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << std::endl << "++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Buddy: " << buddy << std::endl;
+  std::cout << "c - Call buddy " << buddy << std::endl;
+  std::cout << "a - Answer call with " << buddy << std::endl;
+  std::cout << "e - End call with " << buddy << std::endl;
+  std::cout << "m - Send message to buddy " << buddy << std::endl;
+  std::cout << "r - Show ratchet state" << std::endl;
+  std::cout << "v - Force vertical ratchet" << std::endl;
+  std::cout << "p - Clear pending vertical ratchet" << std::endl;
+  std::cout << "s - Show session states" << std::endl;  // NOU!
+  std::cout << "d - Debug session info" << std::endl;
+  std::cout << "++++++++++++++++++++++++++++++++++++++++++++++++" << std::endl;
 }
 
 using namespace std;
-
 
 int main(int argc, char *argv[])
 {
@@ -146,17 +143,11 @@ int main(int argc, char *argv[])
   int ports[] = {smkex_port, smkex_port2};
   std::string clientids[] = {std::string(clientID), std::string(clientID2)};
 
-  // ✅ INITIALIZE WEBSOCKET WITH MULTITHREADING
-  printf("🌐 Initializing WebSocket with multithreading support...\n");
   WebSockets &webSocketTransport = WebSockets::getInstance();
   webSocketTransport.init(serverips, ports, clientids, 2);
   webSocketTransport.addMsgCb(&smkex);
 
   smkex.setSmkexTransport(&webSocketTransport);
-
-  // ✅ SHOW WEBSOCKET STATUS
-  printf("🌐 WebSocket listener status: %s\n", 
-         webSocketTransport.isListenerRunning() ? "🟢 RUNNING" : "🔴 STOPPED");
 
   if (argc > 12 && strncmp(argv[12], "init", 4) == 0)
   {
@@ -176,8 +167,10 @@ int main(int argc, char *argv[])
 #endif
       mssleep(10);
 
-      // ✅ NOTE: No need for manual WebSocket checks - background thread handles it!
-      // The background WebSocket listener will automatically receive messages
+      // Read SMKEX messages if available
+      LOGMSG("Checking for new messages from web socket\n");
+      if (smkex.checkNewMessages())
+        LOGMSG("Error retrieving SMKEX messages\n");
     }
 
     LOGMSG("\nSession with buddy established!\n");
@@ -186,6 +179,8 @@ int main(int argc, char *argv[])
     printf("Session key has %d bytes: \n\n\n", klen);
     smkex.print_buf(kbuf, klen);
 #endif
+
+    // Now send messages with key as needed...
   }
   else
   {
@@ -196,8 +191,10 @@ int main(int argc, char *argv[])
       LOGMSG("Waiting for a new session to be established\n");
       mssleep(10);
 
-      // ✅ NOTE: Background WebSocket thread handles message reception automatically
-      // No need for manual checkNewMessages() calls
+      // Read SMKEX messages if available
+      LOGMSG("Checking for new messages from web socket\n");
+      if (smkex.checkNewMessages())
+        LOGMSG("Error retrieving SMKEX messages\n");
     }
 
     // Get information on last established session
@@ -220,8 +217,8 @@ int main(int argc, char *argv[])
   MpUserAccount *uc = MpService::instance()->getUserAccount();
   uc->addRegCallback((MpIRegistration *)&regCb);
 
-  MpAccSettings accSettings(std::string(server_ip),
-                            sip_port,
+  MpAccSettings accSettings(std::string(server_ip), // std::string("195.95.167.231"),
+                            sip_port,               // 8890,
                             std::string(clientID),
                             10 /* PJSIP log level */,
                             MP_NETWORK_WIFI,
@@ -250,192 +247,154 @@ int main(int argc, char *argv[])
   MpService::instance()->getCallManager()->addCallCb(&callRcv);
 
   char opt;
-  SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+      unsigned int last_checked_count = 0;  // Track last message count we checked at
 
-  printf("\n🎯 Application ready! Background WebSocket listener is active.\n");
-  printf("🔄 Signal-style vertical ratchet enabled - will trigger on role reversals\n\n");
-
-  while (true)
-  {
-    // ✅ SHOW WEBSOCKET STATUS IN MENU
-    printf("\n🌐 WebSocket Listener: %s | ", 
-           webSocketTransport.isListenerRunning() ? "🟢 ACTIVE" : "🔴 STOPPED");
-    printf("Session State: %d | ", session.getState());
-    printf("Messages: S:%u R:%u\n", 
-           session.getSendingCounter(), session.getReceivingCounter());
-
-    print_usage(buddyID);
-    opt = getchar();
-    
-    switch (opt)
+    while (true)
     {
-    case 'c':
-        std::cout << std::endl << "Action: Calling buddy!" << std::endl;
-        MpService::instance()->getCallManager()->callBuddy(buddyID);
-        break;
+        // ============================================
+        // SINGLE WEBSOCKET CHECK - ONLY AT 5, 10, 15, 20, etc.
+        // ============================================
+        SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+        unsigned int current_count = session.getSendingCounter() + session.getReceivingCounter();
         
-    case 'a':
-        std::cout << std::endl << "Action: Answer call!" << std::endl;
-        MpService::instance()->getCallManager()->answerCall(MP_ANSWER_CALL);
-        break;
-        
-    case 'e':
-    {
-        std::cout << std::endl << "Action: End call!" << std::endl;
-        mp_status_t result = MpService::instance()->getCallManager()->endCall();
-        if (result == MP_SUCCESS) {
-            std::cout << "✅ Call ended successfully." << std::endl;
-        } else {
-            std::cout << "❌ Error ending call! Forcing termination..." << std::endl;
-            pjsua_call_hangup_all();
+        // Check if we reached a new multiple of 5 that we haven't checked yet
+        if (current_count > 0 && 
+            current_count % VERTICAL_RATCHET_INTERVAL == 0 && 
+            current_count != last_checked_count) {
+            
+            printf("📡 WebSocket check at %u messages (multiple of %d)\n", 
+                   current_count, VERTICAL_RATCHET_INTERVAL);
+            
+            smkex.checkNewMessages();
+            last_checked_count = current_count;  // Mark this count as checked
+            
+            printf("✅ Single WebSocket check completed\n");
         }
-        break;
-    }
-    
-    case 's':
-    {
-        std::cout << std::endl << "Action: Show session states!" << std::endl;
-        
-        printf("=== SESSION STATES DEBUG ===\n");
-        printf("Current session state: %d\n", session.getState());
-        printf("Role: %s\n", session.isInitiator() ? "INITIATOR" : "RESPONDER");
-        printf("Messages: %u (S:%u + R:%u)\n", 
-               session.getSendingCounter() + session.getReceivingCounter(),
-               session.getSendingCounter(), session.getReceivingCounter());
-        printf("Vertical pending: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
-        
-        printf("--- WebSocket Info ---\n");
-        printf("Background listener: %s\n", 
-               webSocketTransport.isListenerRunning() ? "ACTIVE" : "STOPPED");
-        printf("=======================\n");
-        break;
-    }
-    
-    case 'm':
-    {
-        std::cout << std::endl << "Action: Send message!" << std::endl;
-        char msg[256] = {0};
-        std::cout << "Enter message: ";
-        std::cin.clear();
-        std::cin.ignore();
-        std::cin.getline(msg, sizeof(msg) - 1, '\n');
 
-        // Show state BEFORE sending
-        printf("📊 BEFORE: S:%u + R:%u = %u\n", 
-               session.getSendingCounter(), session.getReceivingCounter(),
-               session.getSendingCounter() + session.getReceivingCounter());
-
-        MpBuffer payload((uint8_t *)msg, strlen(msg));
-        MpMsgPayload message(buddyID, payload, 1, 5, 1, MP_TYPE_MESSAGE, false);
-        MpService::instance()->getAutoResend()->addMessage(message);
-
-        std::cout << "✅ Message sent!" << std::endl;
+        // ============================================
+        // REGULAR MENU
+        // ============================================
+        print_usage(buddyID);
+        opt = getchar();
         
-        // Show state AFTER sending
-        printf("📊 AFTER: S:%u + R:%u = %u\n", 
-               session.getSendingCounter(), session.getReceivingCounter(),
-               session.getSendingCounter() + session.getReceivingCounter());
-        break;
-    }
-    
-    case 'r':
-    {
-        std::cout << std::endl << "Action: Show ratchet state!" << std::endl;
-        session.printRatchetState();
-        break;
-    }
-    
-    case 'v':
-    {
-        std::cout << std::endl << "Action: Force Signal-style vertical ratchet!" << std::endl;
-        if (session.getState() == SmkexState::STATEConnected || 
-            session.getState() == SmkexState::STATEWaitNonceH) {
-            // Use the new Signal-style method
-            if (smkex.checkAndPerformVerticalRatchetOnFallback(buddyID) == 0) {
-                std::cout << "✅ Signal-style vertical ratchet initiated!" << std::endl;
+        switch (opt)
+        {
+        case 'c':
+            std::cout << std::endl << "Action: Calling buddy!" << std::endl;
+            MpService::instance()->getCallManager()->callBuddy(buddyID);
+            break;
+            
+        case 'a':
+            std::cout << std::endl << "Action: Answer call!" << std::endl;
+            MpService::instance()->getCallManager()->answerCall(MP_ANSWER_CALL);
+            break;
+            
+        case 'e':
+        {
+            std::cout << std::endl << "Action: End call!" << std::endl;
+            mp_status_t result = MpService::instance()->getCallManager()->endCall();
+            if (result == MP_SUCCESS) {
+                std::cout << "✅ Call ended successfully." << std::endl;
             } else {
-                std::cout << "❌ Failed to initiate Signal-style vertical ratchet!" << std::endl;
+                std::cout << "❌ Error ending call! Forcing termination..." << std::endl;
+                pjsua_call_hangup_all();
             }
-        } else {
-            std::cout << "❌ Session not ready! State: " << session.getState() << std::endl;
+            break;
         }
-        break;
-    }
-    
-    case 'p':
-    {
-        std::cout << std::endl << "Action: Clear pending vertical ratchet!" << std::endl;
-        if (session.hasPendingVerticalRatchet()) {
-            session.resetVerticalRatchetCounters();
-            std::cout << "✅ Pending cleared!" << std::endl;
-        } else {
-            std::cout << "ℹ️  No pending to clear" << std::endl;
+        
+        case 's':
+        {
+            std::cout << std::endl << "Action: Show session states!" << std::endl;
+            SmkexSessionInfo &session = smkex.getSessionInfo(buddyID);
+            
+            printf("=== SESSION STATES DEBUG ===\n");
+            printf("Current session state: %d\n", session.getState());
+            printf("Role: %s\n", session.isInitiator() ? "INITIATOR" : "RESPONDER");
+            printf("Messages: %u (S:%u + R:%u)\n", 
+                   session.getSendingCounter() + session.getReceivingCounter(),
+                   session.getSendingCounter(), session.getReceivingCounter());
+            printf("Vertical pending: %s\n", session.hasPendingVerticalRatchet() ? "YES" : "NO");
+            printf("============================\n");
+            break;
         }
-        break;
-    }
-    
-    case 'w':
-    {
-        std::cout << std::endl << "Action: Manual WebSocket check!" << std::endl;
-        smkex.checkNewMessages();
-        std::cout << "✅ Manual check completed!" << std::endl;
-        std::cout << "ℹ️  Background listener is: " << 
-                    (webSocketTransport.isListenerRunning() ? "🟢 ACTIVE" : "🔴 STOPPED") << std::endl;
-        break;
-    }
-    
-    case 'z':
-    {
-        std::cout << std::endl << "Action: Restart WebSocket listener!" << std::endl;
-        webSocketTransport.stopWebSocketListener();
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        webSocketTransport.startWebSocketListener();
-        std::cout << "✅ WebSocket listener restarted!" << std::endl;
-        break;
-    }
-    
-    case 't':
-    {
-        std::cout << std::endl << "Action: Test Signal-style ratchet detection!" << std::endl;
-        printf("🧪 Testing role reversal detection:\n");
-        printf("   Current: last_was_sent = %s\n", "Unknown"); // Add getter if needed
-        printf("   Send a message, then have the other side respond\n");
-        printf("   You should see: 🔄 ROLE REVERSAL DETECTED!\n");
-        break;
-    }
-    
-    case 'd':
-    {
-        std::cout << std::endl << "Action: Debug session info!" << std::endl;
-        session.printSessionInfo();
         
-        printf("\n--- WebSocket Debug ---\n");
-        printf("Listener running: %s\n", 
-               webSocketTransport.isListenerRunning() ? "YES" : "NO");
-        printf("Background thread receives messages automatically\n");
-        printf("No manual polling needed!\n");
-        break;
-    }
-    
-    case 'q':
-    {
-        std::cout << std::endl << "Action: Quit application!" << std::endl;
-        
-        // ✅ CLEAN SHUTDOWN
-        printf("🛑 Stopping WebSocket listener...\n");
-        webSocketTransport.stopWebSocketListener();
-        
-        printf("✅ Application shutting down cleanly\n");
-        return 0;
-    }
-    
-    default:
-        if (opt != '\n') {  // Ignore empty input
-            std::cout << "❓ Unknown option: " << opt << std::endl;
-        }
-        break;
-    }
-  }
+        case 'm':
+        {
+            std::cout << std::endl << "Action: Send message!" << std::endl;
+            char msg[256] = {0};
+            std::cout << "Enter message: ";
+            std::cin.clear();
+            std::cin.ignore();
+            std::cin.getline(msg, sizeof(msg) - 1, '\n');
 
-  return 0;
+            // Show state BEFORE sending
+            printf("📊 BEFORE: S:%u + R:%u = %u\n", 
+                   session.getSendingCounter(), session.getReceivingCounter(),
+                   session.getSendingCounter() + session.getReceivingCounter());
+
+            MpBuffer payload((uint8_t *)msg, strlen(msg));
+            MpMsgPayload message(buddyID, payload, 1, 5, 1, MP_TYPE_MESSAGE, false);
+            MpService::instance()->getAutoResend()->addMessage(message);
+
+            std::cout << "✅ Message sent!" << std::endl;
+            
+            // Show state AFTER sending
+            printf("📊 AFTER: S:%u + R:%u = %u\n", 
+                   session.getSendingCounter(), session.getReceivingCounter(),
+                   session.getSendingCounter() + session.getReceivingCounter());
+            break;
+        }
+        
+        case 'r':
+        {
+            std::cout << std::endl << "Action: Show ratchet state!" << std::endl;
+            session.printRatchetState();
+            break;
+        }
+        
+        case 'v':
+        {
+            std::cout << std::endl << "Action: Force vertical ratchet!" << std::endl;
+            if (session.getState() == SmkexState::STATEConnected) {
+                if (smkex.checkAndPerformVerticalRatchet(buddyID) == 0) {
+                    std::cout << "✅ Vertical ratchet initiated!" << std::endl;
+                } else {
+                    std::cout << "❌ Failed to initiate vertical ratchet!" << std::endl;
+                }
+            } else {
+                std::cout << "❌ Session not connected!" << std::endl;
+            }
+            break;
+        }
+        
+        case 'p':
+        {
+            std::cout << std::endl << "Action: Clear pending vertical ratchet!" << std::endl;
+            if (session.hasPendingVerticalRatchet()) {
+                session.resetVerticalRatchetCounters();
+                std::cout << "✅ Pending cleared!" << std::endl;
+            } else {
+                std::cout << "ℹ️  No pending to clear" << std::endl;
+            }
+            break;
+        }
+        
+        case 'w':
+        {
+            std::cout << std::endl << "Action: Manual WebSocket check!" << std::endl;
+            smkex.checkNewMessages();
+            std::cout << "✅ Check completed!" << std::endl;
+            break;
+        }
+        
+        case 'd':
+        {
+            std::cout << std::endl << "Action: Debug session info!" << std::endl;
+            session.printSessionInfo();
+            break;
+        }
+        }
+    }
+
+    return 0;
 }
